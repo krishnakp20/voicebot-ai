@@ -145,4 +145,68 @@ class ElevenLabsClient:
         except Exception as e:
             print(f"Error fetching agents: {e}")
             return []
+    
+    def get_agent(self, agent_id: str) -> Optional[Dict]:
+        """Fetch a specific agent from ElevenLabs"""
+        try:
+            response = requests.get(
+                f"{self.base_url}/convai/agents/{agent_id}",
+                headers=self.headers
+            )
+            response.raise_for_status()
+            data = response.json()
+            # Debug: print raw response
+            print(f"Raw ElevenLabs API response for agent {agent_id}:")
+            import json
+            print(json.dumps(data, indent=2, default=str))
+            return data
+        except Exception as e:
+            print(f"Error fetching agent {agent_id}: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
+    
+    def create_agent(self, agent_data: Dict) -> Optional[Dict]:
+        """Create a new agent in ElevenLabs"""
+        try:
+            # Use the correct endpoint: /v1/convai/agents/create
+            response = requests.post(
+                f"{self.base_url}/convai/agents/create",
+                headers=self.headers,
+                json=agent_data
+            )
+            response.raise_for_status()
+            return response.json()
+        except requests.exceptions.HTTPError as e:
+            print(f"Error creating agent: {e}")
+            print(f"Response status: {e.response.status_code}")
+            print(f"Response body: {e.response.text[:500] if e.response.text else 'No body'}")
+            import traceback
+            traceback.print_exc()
+            return None
+        except Exception as e:
+            print(f"Error creating agent: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
+    
+    def update_agent(self, agent_id: str, agent_data: Dict) -> Optional[Dict]:
+        """Update an existing agent in ElevenLabs"""
+        try:
+            # Use PATCH method as per ElevenLabs API documentation
+            response = requests.patch(
+                f"{self.base_url}/convai/agents/{agent_id}",
+                headers=self.headers,
+                json=agent_data
+            )
+            response.raise_for_status()
+            return response.json()
+        except Exception as e:
+            print(f"Error updating agent {agent_id}: {e}")
+            import traceback
+            traceback.print_exc()
+            if hasattr(e, 'response') and e.response is not None:
+                print(f"Response status: {e.response.status_code}")
+                print(f"Response body: {e.response.text[:500] if e.response.text else 'No body'}")
+            return None
 

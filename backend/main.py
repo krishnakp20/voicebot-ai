@@ -16,6 +16,9 @@ from schemas import (
     ConversationResponse,
     ConversationDetailResponse,
     TranscriptResponse,
+    AgentCreate,
+    AgentUpdate,
+    AgentResponse,
 )
 from auth import verify_password, create_access_token, verify_token
 from elevenlabs_client import (
@@ -96,6 +99,40 @@ def get_conversations(
         .limit(limit)
         .all()
     )
+    
+    # Get all agents to resolve agent IDs to names
+    agents = elevenlabs_client.get_agents()
+    agent_map = {}
+    if agents:
+        for agent in agents:
+            agent_id = agent.get("agent_id") or agent.get("id") or ""
+            agent_name = agent.get("name") or ""
+            if agent_id:
+                # If name is missing from list, fetch full agent details
+                if not agent_name:
+                    full_agent = elevenlabs_client.get_agent(agent_id)
+                    if full_agent:
+                        agent_name = full_agent.get("name") or agent_id
+                    else:
+                        agent_name = agent_id
+                agent_map[agent_id] = agent_name
+    
+    # Resolve agent IDs to names for conversations (in memory, not updating DB)
+    conversations_to_update = []
+    for conv in conversations:
+        if conv.agent and conv.agent.startswith("agent_"):
+            # If agent field looks like an ID, try to resolve it
+            resolved_name = agent_map.get(conv.agent)
+            if resolved_name:
+                conv.agent = resolved_name
+                conversations_to_update.append((conv.id, resolved_name))
+    
+    # Update database if we found any agent IDs to resolve
+    if conversations_to_update:
+        for conv_id, agent_name in conversations_to_update:
+            db.query(Conversation).filter(Conversation.id == conv_id).update({"agent": agent_name})
+        db.commit()
+    
     if not conversations:
         sync_conversations(db)
         conversations = (
@@ -105,6 +142,13 @@ def get_conversations(
             .limit(limit)
             .all()
         )
+        # Resolve agent IDs again after sync (in memory)
+        for conv in conversations:
+            if conv.agent and conv.agent.startswith("agent_"):
+                resolved_name = agent_map.get(conv.agent)
+                if resolved_name:
+                    conv.agent = resolved_name
+    
     return conversations
 
 
@@ -222,7 +266,20 @@ def get_conversation(
     conv_data = elevenlabs_client.get_conversation(conversation_id)
     if not conv_data:
         if conversation:
-            return conversation
+            # Return conversation with nulls for new fields
+            return {
+                "id": conversation.id,
+                "conversation_id": conversation.conversation_id,
+                "agent": conversation.agent,
+                "caller_number": conversation.caller_number,
+                "receiver_number": conversation.receiver_number,
+                "duration": conversation.duration,
+                "sentiment": conversation.sentiment,
+                "created_at": conversation.created_at,
+                "transcript_summary": None,
+                "data_collection_results": None,
+                "call_summary_title": None,
+            }
         raise HTTPException(status_code=404, detail="Conversation not found")
 
     metadata = conv_data.get("metadata", {}) or {}
@@ -237,6 +294,16 @@ def get_conversation(
     agent_name = conv_data.get("agent_name") or conv_data.get("agent_id") or ""
     if not agent_name and isinstance(conv_data.get("agent"), dict):
         agent_name = conv_data["agent"].get("name", "")
+    
+    # Resolve agent ID to name if needed
+    if agent_name and agent_name.startswith("agent_"):
+        agents = elevenlabs_client.get_agents()
+        if agents:
+            for agent in agents:
+                agent_id = agent.get("agent_id") or agent.get("id") or ""
+                if agent_id == agent_name:
+                    agent_name = agent.get("name") or agent_name
+                    break
 
     caller_number = phone_call.get("external_number", "")
     receiver_number = phone_call.get("agent_number", "")
@@ -248,6 +315,30 @@ def get_conversation(
         or analysis.get("sentiment_score")
         or analysis.get("sentiment")
     )
+    
+    # Extract transcript_summary
+    transcript_summary = (
+        conv_data.get("transcript_summary")
+        or analysis.get("transcript_summary")
+        or analysis.get("summary")
+    )
+    
+    # Extract call_summary_title
+    call_summary_title = (
+        conv_data.get("call_summary_title")
+        or analysis.get("call_summary_title")
+        or analysis.get("title")
+    )
+    
+    # Extract data_collection_results
+    data_collection_results = (
+        conv_data.get("data_collection_results")
+        or conv_data.get("data_collection")
+        or analysis.get("data_collection_results")
+    )
+
+    evaluation_criteria_results = analysis.get("evaluation_criteria_results")
+    call_successful = analysis.get("call_successful") or conv_data.get("call_successful")
 
     if conversation:
         conversation.agent = agent_name
@@ -270,7 +361,23 @@ def get_conversation(
 
     db.commit()
     db.refresh(conversation)
-    return conversation
+    
+    # Return with additional fields
+    return {
+        "id": conversation.id,
+        "conversation_id": conversation.conversation_id,
+        "agent": conversation.agent,
+        "caller_number": conversation.caller_number,
+        "receiver_number": conversation.receiver_number,
+        "duration": conversation.duration,
+        "sentiment": conversation.sentiment,
+        "created_at": conversation.created_at,
+        "transcript_summary": transcript_summary,
+        "data_collection_results": data_collection_results,
+        "call_summary_title": call_summary_title,
+        "evaluation_criteria_results": evaluation_criteria_results,
+        "call_successful": call_successful,
+    }
 
 
 @app.get("/conversations/{conversation_id}/transcript", response_model=TranscriptResponse)
@@ -347,10 +454,490 @@ def sync_elevenlabs(
     return {"message": f"Synced {count} conversations from ElevenLabs"}
 
 
+@app.get("/agents", response_model=List[AgentResponse])
+def get_agents(
+    current_user: User = Depends(get_current_user),
+):
+    """Get all agents from ElevenLabs"""
+    agents = elevenlabs_client.get_agents()
+    if not agents:
+        return []
+    
+    # Transform agents to match our response schema
+    agent_list = []
+    for agent in agents:
+        agent_id = agent.get("agent_id") or agent.get("id") or ""
+        if not agent_id:
+            continue
+        
+        # Debug: Check if conversation_config exists in list response
+        conversation_config = agent.get("conversation_config")
+        
+        # If conversation_config is not in the list response, fetch full agent details
+        if not conversation_config:
+            print(f"Agent {agent_id} missing conversation_config in list, fetching full details...")
+            full_agent = elevenlabs_client.get_agent(agent_id)
+            if full_agent:
+                agent = full_agent
+                conversation_config = agent.get("conversation_config") or {}
+        
+        # Extract conversation_config which contains all agent settings
+        conversation_config = conversation_config or {}
+        agent_config = conversation_config.get("agent") or {}
+        prompt_config = agent_config.get("prompt") or {}
+        tts_config = conversation_config.get("tts") or {}
+        
+        # Extract metadata for created_at
+        metadata = agent.get("metadata") or {}
+        
+        # System prompt is in conversation_config.agent.prompt.prompt
+        system_prompt = prompt_config.get("prompt")
+        
+        # First message is in conversation_config.agent.first_message
+        first_message = agent_config.get("first_message")
+        
+        # Language is in conversation_config.agent.language
+        language = agent_config.get("language")
+        
+        # Voice ID is in conversation_config.tts.voice_id
+        voice_id = tts_config.get("voice_id")
+        
+        # LLM model is in conversation_config.agent.prompt.llm
+        llm_model = prompt_config.get("llm")
+        
+        # Knowledge base is in conversation_config.agent.prompt.knowledge_base (it's an array)
+        knowledge_base_array = prompt_config.get("knowledge_base") or []
+        knowledge_base = None
+        
+        # Convert knowledge_base array to object format
+        if knowledge_base_array:
+            kb_items = []
+            for kb_item in knowledge_base_array:
+                if isinstance(kb_item, dict):
+                    kb_type = kb_item.get("type", "")
+                    kb_name = kb_item.get("name", "")
+                    kb_id = kb_item.get("id", "")
+                    
+                    if kb_type == "file" and kb_name:
+                        kb_items.append({"file": kb_name, "id": kb_id})
+                    elif kb_type == "url":
+                        kb_items.append({"url": kb_item.get("url", "")})
+                    elif kb_type == "text":
+                        kb_items.append({"text": kb_item.get("text", "")})
+            
+            if kb_items:
+                # Merge all knowledge base items
+                knowledge_base = {}
+                for item in kb_items:
+                    if "file" in item:
+                        knowledge_base["file"] = item["file"]
+                    if "url" in item:
+                        knowledge_base["url"] = item["url"]
+                    if "text" in item:
+                        knowledge_base["text"] = item["text"]
+                
+                if not knowledge_base:
+                    knowledge_base = None
+        
+        # Created at from metadata.created_at_unix_secs
+        created_at_unix = metadata.get("created_at_unix_secs")
+        created_at = None
+        if created_at_unix:
+            try:
+                from datetime import datetime
+                created_at = datetime.fromtimestamp(created_at_unix)
+            except:
+                created_at = None
+        
+        agent_list.append({
+            "agent_id": agent_id,
+            "name": agent.get("name"),
+            "system_prompt": system_prompt,
+            "first_message": first_message,
+            "knowledge_base": knowledge_base,
+            "voice_id": voice_id,
+            "language": language,
+            "llm_model": llm_model,
+            "created_at": created_at,
+        })
+    
+    return agent_list
+
+
+@app.get("/agents/{agent_id}", response_model=AgentResponse)
+def get_agent(
+    agent_id: str,
+    current_user: User = Depends(get_current_user),
+):
+    """Get a specific agent from ElevenLabs"""
+    agent = elevenlabs_client.get_agent(agent_id)
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    
+    # Debug: print agent data
+    print(f"Raw agent data from ElevenLabs:")
+    import json
+    print(json.dumps(agent, indent=2, default=str))
+    
+    agent_id_key = agent.get("agent_id") or agent.get("id") or agent_id
+    
+    # Extract conversation_config which contains all agent settings
+    conversation_config = agent.get("conversation_config")
+    print(f"conversation_config exists: {conversation_config is not None}")
+    
+    if not conversation_config:
+        # If no conversation_config, return basic data
+        return {
+            "agent_id": agent_id_key,
+            "name": agent.get("name"),
+            "system_prompt": None,
+            "first_message": None,
+            "knowledge_base": None,
+            "voice_id": None,
+            "language": None,
+            "llm_model": None,
+            "created_at": None,
+        }
+    
+    agent_config = conversation_config.get("agent") or {}
+    prompt_config = agent_config.get("prompt") or {}
+    tts_config = conversation_config.get("tts") or {}
+    
+    print(f"agent_config keys: {list(agent_config.keys())}")
+    print(f"prompt_config keys: {list(prompt_config.keys())}")
+    print(f"tts_config keys: {list(tts_config.keys())}")
+    
+    # Extract metadata for created_at
+    metadata = agent.get("metadata") or {}
+    
+    # System prompt is in conversation_config.agent.prompt.prompt
+    system_prompt = prompt_config.get("prompt")
+    print(f"System prompt found: {system_prompt is not None}, length: {len(system_prompt) if system_prompt else 0}")
+    
+    # First message is in conversation_config.agent.first_message
+    first_message = agent_config.get("first_message")
+    print(f"First message found: {first_message is not None}, value: {first_message[:50] if first_message else None}")
+    
+    # Language is in conversation_config.agent.language
+    language = agent_config.get("language")
+    print(f"Language found: {language}")
+    
+    # Voice ID is in conversation_config.tts.voice_id
+    voice_id = tts_config.get("voice_id")
+    print(f"Voice ID found: {voice_id}")
+    
+    # LLM model is in conversation_config.agent.prompt.llm
+    llm_model = prompt_config.get("llm")
+    print(f"LLM model found: {llm_model}")
+    
+    # Knowledge base is in conversation_config.agent.prompt.knowledge_base (it's an array)
+    knowledge_base_array = prompt_config.get("knowledge_base") or []
+    print(f"Knowledge base array: {knowledge_base_array}")
+    knowledge_base = None
+    
+    # Convert knowledge_base array to object format
+    if knowledge_base_array and isinstance(knowledge_base_array, list):
+        kb_items = []
+        for kb_item in knowledge_base_array:
+            if isinstance(kb_item, dict):
+                kb_type = kb_item.get("type", "")
+                kb_name = kb_item.get("name", "")
+                kb_id = kb_item.get("id", "")
+                
+                if kb_type == "file" and kb_name:
+                    kb_items.append({"file": kb_name, "id": kb_id})
+                elif kb_type == "url":
+                    kb_items.append({"url": kb_item.get("url", "")})
+                elif kb_type == "text":
+                    kb_items.append({"text": kb_item.get("text", "")})
+        
+        if kb_items:
+            # Merge all knowledge base items
+            knowledge_base = {}
+            for item in kb_items:
+                if "file" in item:
+                    knowledge_base["file"] = item["file"]
+                if "url" in item:
+                    knowledge_base["url"] = item["url"]
+                if "text" in item:
+                    knowledge_base["text"] = item["text"]
+            
+            if not knowledge_base:
+                knowledge_base = None
+    
+    # Created at from metadata.created_at_unix_secs
+    created_at_unix = metadata.get("created_at_unix_secs")
+    created_at = None
+    if created_at_unix:
+        try:
+            from datetime import datetime
+            created_at = datetime.fromtimestamp(created_at_unix)
+        except Exception as e:
+            print(f"Error parsing created_at: {e}")
+            created_at = None
+    
+    response_data = {
+        "agent_id": agent_id_key,
+        "name": agent.get("name"),
+        "system_prompt": system_prompt,
+        "first_message": first_message,
+        "knowledge_base": knowledge_base,
+        "voice_id": voice_id,
+        "language": language,
+        "llm_model": llm_model,
+        "created_at": created_at,
+    }
+    
+    print(f"Final response data:")
+    print(json.dumps(response_data, indent=2, default=str))
+    
+    return response_data
+
+
+@app.post("/agents", response_model=AgentResponse)
+def create_agent(
+    agent_data: AgentCreate,
+    current_user: User = Depends(get_current_user),
+):
+    """Create a new agent in ElevenLabs"""
+    # Build conversation_config structure as expected by ElevenLabs API
+    # Valid LLM models: gpt-4o-mini, gpt-4o, gpt-4, gpt-4-turbo, gpt-4.1, gemini-1.5-pro, gemini-1.5-flash, claude-3-5-sonnet, etc.
+    # Default to gpt-4o-mini if not provided or invalid
+    valid_llm_models = [
+        'gpt-4o-mini', 'gpt-4o', 'gpt-4', 'gpt-4-turbo', 'gpt-4.1', 'gpt-4.1-mini', 'gpt-4.1-nano',
+        'gpt-5', 'gpt-5.1', 'gpt-5-mini', 'gpt-5-nano', 'gpt-3.5-turbo',
+        'gemini-1.5-pro', 'gemini-1.5-flash', 'gemini-2.0-flash', 'gemini-2.0-flash-lite',
+        'gemini-2.5-flash-lite', 'gemini-2.5-flash',
+        'claude-sonnet-4-5', 'claude-sonnet-4', 'claude-haiku-4-5', 'claude-3-7-sonnet', 'claude-3-5-sonnet'
+    ]
+    
+    llm_model = agent_data.llm_model or "gpt-4o-mini"
+    if llm_model not in valid_llm_models:
+        print(f"Warning: Invalid LLM model '{llm_model}', using default 'gpt-4o-mini'")
+        llm_model = "gpt-4o-mini"
+    
+    conversation_config = {
+        "agent": {
+            "first_message": agent_data.first_message or "",
+            "language": agent_data.language or "en",
+            "prompt": {
+                "prompt": agent_data.system_prompt or "",
+                "llm": llm_model,
+            }
+        },
+        "tts": {
+            "voice_id": agent_data.voice_id or "21m00Tcm4TlvDq8ikWAM",
+            "model_id": "eleven_turbo_v2_5"
+        }
+    }
+    
+    # Add knowledge_base if provided
+    if agent_data.knowledge_base:
+        kb_items = []
+        if agent_data.knowledge_base.file:
+            kb_items.append({
+                "type": "file",
+                "name": agent_data.knowledge_base.file
+            })
+        if agent_data.knowledge_base.url:
+            kb_items.append({
+                "type": "url",
+                "url": agent_data.knowledge_base.url
+            })
+        if agent_data.knowledge_base.text:
+            kb_items.append({
+                "type": "text",
+                "text": agent_data.knowledge_base.text
+            })
+        
+        if kb_items:
+            conversation_config["agent"]["prompt"]["knowledge_base"] = kb_items
+    
+    # Prepare payload with proper structure
+    payload = {
+        "name": agent_data.name,
+        "conversation_config": conversation_config
+    }
+    
+    print(f"Creating agent with payload:")
+    import json
+    print(json.dumps(payload, indent=2, default=str))
+    
+    result = elevenlabs_client.create_agent(payload)
+    if not result:
+        raise HTTPException(status_code=500, detail="Failed to create agent. The ElevenLabs API may not support creating agents programmatically, or the endpoint/structure may have changed.")
+    
+    agent_id_key = result.get("agent_id") or result.get("id") or ""
+    
+    # Extract data from response (same structure as get_agent)
+    conversation_config_resp = result.get("conversation_config") or {}
+    agent_config_resp = conversation_config_resp.get("agent") or {}
+    prompt_config_resp = agent_config_resp.get("prompt") or {}
+    tts_config_resp = conversation_config_resp.get("tts") or {}
+    metadata = result.get("metadata") or {}
+    
+    system_prompt = prompt_config_resp.get("prompt")
+    first_message = agent_config_resp.get("first_message")
+    language = agent_config_resp.get("language")
+    voice_id = tts_config_resp.get("voice_id")
+    llm_model = prompt_config_resp.get("llm")
+    
+    knowledge_base_array = prompt_config_resp.get("knowledge_base") or []
+    knowledge_base = None
+    if knowledge_base_array:
+        kb_items = []
+        for kb_item in knowledge_base_array:
+            if isinstance(kb_item, dict):
+                kb_type = kb_item.get("type", "")
+                kb_name = kb_item.get("name", "")
+                if kb_type == "file" and kb_name:
+                    kb_items.append({"file": kb_name})
+                elif kb_type == "url":
+                    kb_items.append({"url": kb_item.get("url", "")})
+                elif kb_type == "text":
+                    kb_items.append({"text": kb_item.get("text", "")})
+        
+        if kb_items:
+            knowledge_base = {}
+            for item in kb_items:
+                knowledge_base.update(item)
+            if not knowledge_base:
+                knowledge_base = None
+    
+    created_at_unix = metadata.get("created_at_unix_secs")
+    created_at = None
+    if created_at_unix:
+        try:
+            from datetime import datetime
+            created_at = datetime.fromtimestamp(created_at_unix)
+        except:
+            created_at = None
+    
+    return {
+        "agent_id": agent_id_key,
+        "name": result.get("name"),
+        "system_prompt": system_prompt,
+        "first_message": first_message,
+        "knowledge_base": knowledge_base,
+        "voice_id": voice_id,
+        "language": language,
+        "llm_model": llm_model,
+        "created_at": created_at,
+    }
+
+
+@app.put("/agents/{agent_id}", response_model=AgentResponse)
+def update_agent(
+    agent_id: str,
+    agent_data: AgentUpdate,
+    current_user: User = Depends(get_current_user),
+):
+    """Update an existing agent in ElevenLabs"""
+    # First get the current agent to preserve existing structure
+    current_agent = elevenlabs_client.get_agent(agent_id)
+    if not current_agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    
+    # Build conversation_config with updates
+    conversation_config = current_agent.get("conversation_config") or {}
+    agent_config = conversation_config.get("agent") or {}
+    prompt_config = agent_config.get("prompt") or {}
+    tts_config = conversation_config.get("tts") or {}
+    
+    # Update fields if provided
+    if agent_data.name is not None:
+        current_agent["name"] = agent_data.name
+    
+    if agent_data.system_prompt is not None:
+        if not prompt_config:
+            prompt_config = {}
+        prompt_config["prompt"] = agent_data.system_prompt
+    
+    if agent_data.first_message is not None:
+        agent_config["first_message"] = agent_data.first_message
+    
+    if agent_data.language is not None:
+        agent_config["language"] = agent_data.language
+    
+    if agent_data.voice_id is not None:
+        tts_config["voice_id"] = agent_data.voice_id
+    
+    if agent_data.llm_model is not None:
+        if not prompt_config:
+            prompt_config = {}
+        prompt_config["llm"] = agent_data.llm_model
+    
+    # Update knowledge_base if provided
+    if agent_data.knowledge_base is not None:
+        kb_items = []
+        if agent_data.knowledge_base.file:
+            kb_items.append({
+                "type": "file",
+                "name": agent_data.knowledge_base.file
+            })
+        if agent_data.knowledge_base.url:
+            kb_items.append({
+                "type": "url",
+                "url": agent_data.knowledge_base.url
+            })
+        if agent_data.knowledge_base.text:
+            kb_items.append({
+                "type": "text",
+                "text": agent_data.knowledge_base.text
+            })
+        
+        if kb_items:
+            if not prompt_config:
+                prompt_config = {}
+            prompt_config["knowledge_base"] = kb_items
+    
+    # Rebuild conversation_config
+    if prompt_config:
+        agent_config["prompt"] = prompt_config
+    if agent_config:
+        conversation_config["agent"] = agent_config
+    if tts_config:
+        conversation_config["tts"] = tts_config
+    
+    # Prepare payload
+    payload = {
+        "name": current_agent.get("name"),
+        "conversation_config": conversation_config
+    }
+    
+    print(f"Updating agent with payload:")
+    import json
+    print(json.dumps(payload, indent=2, default=str)[:1000])  # Truncate for logging
+    
+    result = elevenlabs_client.update_agent(agent_id, payload)
+    if not result:
+        raise HTTPException(status_code=500, detail="Failed to update agent")
+    
+    # Return updated agent using get_agent function
+    return get_agent(agent_id, current_user)
+
+
 def sync_conversations(db: Session) -> int:
     conversations_data = elevenlabs_client.get_conversations()
     if not conversations_data:
         return 0
+
+    # Get all agents to resolve agent IDs to names
+    agents = elevenlabs_client.get_agents()
+    agent_map = {}
+    if agents:
+        for agent in agents:
+            agent_id = agent.get("agent_id") or agent.get("id") or ""
+            agent_name = agent.get("name") or ""
+            if agent_id:
+                agent_map[agent_id] = agent_name
+                # Also try to get name from conversation_config if available
+                if not agent_name:
+                    conversation_config = agent.get("conversation_config") or {}
+                    if conversation_config:
+                        full_agent = elevenlabs_client.get_agent(agent_id)
+                        if full_agent:
+                            agent_map[agent_id] = full_agent.get("name") or agent_id
 
     count = 0
     for conv_data in conversations_data:
@@ -366,12 +953,31 @@ def sync_conversations(db: Session) -> int:
             datetime.fromtimestamp(start_time) if start_time else datetime.utcnow()
         )
 
-        agent_name = conv_data.get("agent_name") or conv_data.get("agent_id") or ""
+        # Get agent ID from conversation data
+        agent_id = conv_data.get("agent_id") or conv_data.get("agent_name") or ""
+        agent_name = conv_data.get("agent_name") or ""
+        
+        # If we only have agent_id, try to resolve it to agent name
+        if agent_id and not agent_name:
+            agent_name = agent_map.get(agent_id, agent_id)
+        elif not agent_name:
+            # Try to get from agent object if present
+            if isinstance(conv_data.get("agent"), dict):
+                agent_name = conv_data["agent"].get("name", "")
+        
+        # Extract caller number from metadata
+        metadata = conv_data.get("metadata", {}) or {}
+        phone_call = metadata.get("phone_call") or {}
+        caller_number = phone_call.get("external_number", "")
+        receiver_number = phone_call.get("agent_number", "")
+        
         duration = conv_data.get("call_duration_secs", 0)
         sentiment = conv_data.get("sentiment_score") or conv_data.get("sentiment")
 
         if existing:
             existing.agent = agent_name or existing.agent
+            existing.caller_number = caller_number or existing.caller_number
+            existing.receiver_number = receiver_number or existing.receiver_number
             existing.duration = duration or existing.duration
             existing.sentiment = sentiment or existing.sentiment
             existing.created_at = created_at
@@ -379,8 +985,8 @@ def sync_conversations(db: Session) -> int:
             conversation = Conversation(
                 conversation_id=conv_id,
                 agent=agent_name,
-                caller_number="",
-                receiver_number="",
+                caller_number=caller_number,
+                receiver_number=receiver_number,
                 duration=duration,
                 sentiment=sentiment,
                 created_at=created_at,

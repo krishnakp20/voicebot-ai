@@ -1,5 +1,5 @@
 from pydantic import BaseModel, EmailStr
-from typing import Optional
+from typing import Optional, Dict
 from datetime import datetime
 
 class UserCreate(BaseModel):
@@ -45,6 +45,11 @@ class ConversationDetailResponse(BaseModel):
     duration: Optional[int]
     sentiment: Optional[float]
     created_at: datetime
+    transcript_summary: Optional[str] = None
+    data_collection_results: Optional[Dict] = None
+    call_summary_title: Optional[str] = None
+    evaluation_criteria_results: Optional[Dict] = None
+    call_successful: Optional[str] = None
     
     class Config:
         from_attributes = True
@@ -54,6 +59,47 @@ class TranscriptResponse(BaseModel):
     conversation_id: str
     text: str
     created_at: datetime
+    
+    class Config:
+        from_attributes = True
+
+
+class KnowledgeBaseInput(BaseModel):
+    url: Optional[str] = None
+    text: Optional[str] = None
+    file: Optional[str] = None  # File path or URL
+
+
+class AgentCreate(BaseModel):
+    name: str
+    system_prompt: Optional[str] = None
+    first_message: Optional[str] = None
+    knowledge_base: Optional[KnowledgeBaseInput] = None
+    voice_id: Optional[str] = None
+    language: Optional[str] = "en"
+    llm_model: Optional[str] = None
+
+
+class AgentUpdate(BaseModel):
+    name: Optional[str] = None
+    system_prompt: Optional[str] = None
+    first_message: Optional[str] = None
+    knowledge_base: Optional[KnowledgeBaseInput] = None
+    voice_id: Optional[str] = None
+    language: Optional[str] = None
+    llm_model: Optional[str] = None
+
+
+class AgentResponse(BaseModel):
+    agent_id: str
+    name: Optional[str] = None
+    system_prompt: Optional[str] = None
+    first_message: Optional[str] = None
+    knowledge_base: Optional[Dict] = None
+    voice_id: Optional[str] = None
+    language: Optional[str] = None
+    llm_model: Optional[str] = None
+    created_at: Optional[datetime] = None
     
     class Config:
         from_attributes = True

@@ -3,6 +3,7 @@ import Login from './pages/Login'
 import Dashboard from './pages/Dashboard'
 import Conversations from './pages/Conversations'
 import ConversationDetail from './pages/ConversationDetail'
+import Agents from './pages/Agents'
 import ProtectedRoute from './components/ProtectedRoute'
 import Layout from './components/Layout'
 
@@ -23,6 +24,7 @@ function App() {
           <Route path="dashboard" element={<Dashboard />} />
           <Route path="conversations" element={<Conversations />} />
           <Route path="conversations/:id" element={<ConversationDetail />} />
+          <Route path="agents" element={<Agents />} />
         </Route>
       </Routes>
     </Router>
