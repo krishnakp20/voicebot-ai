@@ -6,11 +6,15 @@ class UserCreate(BaseModel):
     name: str
     email: EmailStr
     password: str
+    receiver_number: Optional[str] = None
+    receiver_name: Optional[str] = None
 
 class UserResponse(BaseModel):
     id: int
     name: str
     email: str
+    receiver_number: Optional[str] = None
+    receiver_name: Optional[str] = None
     
     class Config:
         from_attributes = True
@@ -100,6 +104,30 @@ class AgentResponse(BaseModel):
     language: Optional[str] = None
     llm_model: Optional[str] = None
     created_at: Optional[datetime] = None
+    
+    class Config:
+        from_attributes = True
+
+
+class PromptTemplateCreate(BaseModel):
+    name: str
+    system_prompt: str
+    first_message: Optional[str] = None
+
+
+class PromptTemplateUpdate(BaseModel):
+    name: Optional[str] = None
+    system_prompt: Optional[str] = None
+    first_message: Optional[str] = None
+
+
+class PromptTemplateResponse(BaseModel):
+    id: int
+    name: str
+    system_prompt: str
+    first_message: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
     
     class Config:
         from_attributes = True

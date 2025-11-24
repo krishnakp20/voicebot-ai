@@ -4,6 +4,7 @@ import Dashboard from './pages/Dashboard'
 import Conversations from './pages/Conversations'
 import ConversationDetail from './pages/ConversationDetail'
 import Agents from './pages/Agents'
+import Prompts from './pages/Prompts'
 import ProtectedRoute from './components/ProtectedRoute'
 import Layout from './components/Layout'
 
@@ -25,6 +26,7 @@ function App() {
           <Route path="conversations" element={<Conversations />} />
           <Route path="conversations/:id" element={<ConversationDetail />} />
           <Route path="agents" element={<Agents />} />
+          <Route path="prompts" element={<Prompts />} />
         </Route>
       </Routes>
     </Router>

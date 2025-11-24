@@ -1,13 +1,30 @@
 import { Outlet, Link, useNavigate } from 'react-router-dom'
+import { useState, useEffect } from 'react'
 import { 
   HomeIcon, 
   ChatBubbleLeftRightIcon,
   UserGroupIcon,
+  DocumentTextIcon,
   ArrowRightOnRectangleIcon
 } from '@heroicons/react/24/outline'
+import api from '../services/api'
 
 const Layout = () => {
   const navigate = useNavigate()
+  const [user, setUser] = useState(null)
+
+  useEffect(() => {
+    fetchUserInfo()
+  }, [])
+
+  const fetchUserInfo = async () => {
+    try {
+      const response = await api.get('/auth/me')
+      setUser(response.data)
+    } catch (error) {
+      console.error('Error fetching user info:', error)
+    }
+  }
 
   const handleLogout = () => {
     localStorage.removeItem('token')
@@ -20,7 +37,14 @@ const Layout = () => {
       <aside className="fixed inset-y-0 left-0 w-64 bg-white shadow-lg">
         <div className="p-6">
           <h1 className="text-2xl font-bold text-gray-800">DialdeskBot AI</h1>
-          
+          {user?.receiver_name && (
+            <div className="mt-2 text-sm text-gray-600">
+              <span className="font-medium">Receiver:</span> {user.receiver_name}
+              {user.receiver_number && (
+                <span className="text-gray-500 ml-1">({user.receiver_number})</span>
+              )}
+            </div>
+          )}
         </div>
         
         <nav className="mt-8">
@@ -44,6 +68,13 @@ const Layout = () => {
           >
             <UserGroupIcon className="w-5 h-5 mr-3" />
             Agents
+          </Link>
+          <Link
+            to="/prompts"
+            className="flex items-center px-6 py-3 text-gray-700 hover:bg-gray-100 transition-colors"
+          >
+            <DocumentTextIcon className="w-5 h-5 mr-3" />
+            Prompts
           </Link>
         </nav>
 

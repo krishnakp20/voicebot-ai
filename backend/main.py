@@ -9,9 +9,10 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
 from database import SessionLocal, engine, Base
-from models import User, Conversation, Transcript
+from models import User, Conversation, Transcript, PromptTemplate
 from schemas import (
     UserResponse,
+    UserCreate,
     Token,
     ConversationResponse,
     ConversationDetailResponse,
@@ -19,6 +20,9 @@ from schemas import (
     AgentCreate,
     AgentUpdate,
     AgentResponse,
+    PromptTemplateCreate,
+    PromptTemplateUpdate,
+    PromptTemplateResponse,
 )
 from auth import verify_password, create_access_token, verify_token
 from elevenlabs_client import (
@@ -29,6 +33,90 @@ from elevenlabs_client import (
 
 
 Base.metadata.create_all(bind=engine)
+
+# Ensure receiver columns exist in users table (for existing databases)
+def ensure_receiver_columns():
+    """Ensure receiver_number and receiver_name columns exist in users table"""
+    from sqlalchemy import text, inspect
+    inspector = inspect(engine)
+    try:
+        columns = [col['name'] for col in inspector.get_columns('users')]
+        
+        with engine.connect() as conn:
+            if 'receiver_number' not in columns:
+                conn.execute(text("""
+                    ALTER TABLE users 
+                    ADD COLUMN receiver_number VARCHAR(50) NULL,
+                    ADD INDEX idx_users_receiver_number (receiver_number)
+                """))
+                conn.commit()
+            
+            if 'receiver_name' not in columns:
+                conn.execute(text("""
+                    ALTER TABLE users 
+                    ADD COLUMN receiver_name VARCHAR(255) NULL
+                """))
+                conn.commit()
+    except Exception as e:
+        # Table might not exist yet, which is fine
+        pass
+
+# Ensure user_id column exists in prompt_templates table (for existing databases)
+def ensure_prompt_template_user_id():
+    """Ensure user_id column exists in prompt_templates table"""
+    from sqlalchemy import text, inspect
+    inspector = inspect(engine)
+    try:
+        # Check if prompt_templates table exists
+        table_names = inspector.get_table_names()
+        if 'prompt_templates' not in table_names:
+            # Table doesn't exist yet, Base.metadata.create_all() will create it with all columns
+            return
+        
+        columns = [col['name'] for col in inspector.get_columns('prompt_templates')]
+        
+        with engine.connect() as conn:
+            if 'user_id' not in columns:
+                # Add user_id column - first as nullable for existing records
+                conn.execute(text("""
+                    ALTER TABLE prompt_templates 
+                    ADD COLUMN user_id INT NULL,
+                    ADD INDEX idx_prompt_templates_user_id (user_id)
+                """))
+                conn.commit()
+                
+                # Add foreign key constraint
+                try:
+                    conn.execute(text("""
+                        ALTER TABLE prompt_templates 
+                        ADD CONSTRAINT fk_prompt_templates_user_id 
+                        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+                    """))
+                    conn.commit()
+                except Exception as e:
+                    # Foreign key might already exist or there's a constraint issue
+                    print(f"Note: Could not add foreign key constraint: {e}")
+                
+                # Delete any existing records without user_id (they're orphaned)
+                # Or assign to first user if preferred - for now we'll delete them
+                conn.execute(text("""
+                    DELETE FROM prompt_templates WHERE user_id IS NULL
+                """))
+                conn.commit()
+                
+                # Now make user_id NOT NULL
+                conn.execute(text("""
+                    ALTER TABLE prompt_templates 
+                    MODIFY COLUMN user_id INT NOT NULL
+                """))
+                conn.commit()
+    except Exception as e:
+        # Table might not exist yet or migration already applied, which is fine
+        print(f"Note: Prompt template migration check: {e}")
+
+# Run migration checks on startup
+ensure_receiver_columns()
+ensure_prompt_template_user_id()
 
 app = FastAPI(title="VoiceBot AI Dashboard API")
 
@@ -85,6 +173,35 @@ def read_users_me(current_user: User = Depends(get_current_user)):
     return current_user
 
 
+@app.post("/users", response_model=UserResponse)
+def create_user(
+    user_data: UserCreate,
+    db: Session = Depends(get_db),
+):
+    """Create a new user with optional receiver number mapping"""
+    # Check if user already exists
+    existing_user = db.query(User).filter(User.email == user_data.email).first()
+    if existing_user:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="User with this email already exists"
+        )
+    
+    from auth import get_password_hash
+    
+    user = User(
+        email=user_data.email,
+        name=user_data.name,
+        password_hash=get_password_hash(user_data.password),
+        receiver_number=user_data.receiver_number,
+        receiver_name=user_data.receiver_name
+    )
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    return user
+
+
 @app.get("/conversations", response_model=List[ConversationResponse])
 def get_conversations(
     skip: int = 0,
@@ -92,8 +209,13 @@ def get_conversations(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    # Filter conversations by user's receiver_number if mapped
+    query = db.query(Conversation)
+    if current_user.receiver_number:
+        query = query.filter(Conversation.receiver_number == current_user.receiver_number)
+    
     conversations = (
-        db.query(Conversation)
+        query
         .order_by(Conversation.created_at.desc())
         .offset(skip)
         .limit(limit)
@@ -135,8 +257,12 @@ def get_conversations(
     
     if not conversations:
         sync_conversations(db)
+        # Re-query with receiver_number filter after sync
+        query = db.query(Conversation)
+        if current_user.receiver_number:
+            query = query.filter(Conversation.receiver_number == current_user.receiver_number)
         conversations = (
-            db.query(Conversation)
+            query
             .order_by(Conversation.created_at.desc())
             .offset(skip)
             .limit(limit)
@@ -157,19 +283,24 @@ def get_conversation_metrics(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    total = db.query(Conversation).count()
+    # Filter by user's receiver_number if mapped
+    base_query = db.query(Conversation)
+    if current_user.receiver_number:
+        base_query = base_query.filter(Conversation.receiver_number == current_user.receiver_number)
+    
+    total = base_query.count()
     today_start = datetime.combine(date.today(), datetime.min.time())
     today_end = today_start + timedelta(days=1)
     yesterday_start = today_start - timedelta(days=1)
     yesterday_end = today_start
 
     todays_count = (
-        db.query(Conversation)
+        base_query
         .filter(Conversation.created_at >= today_start, Conversation.created_at < today_end)
         .count()
     )
     yesterdays_count = (
-        db.query(Conversation)
+        base_query
         .filter(
             Conversation.created_at >= yesterday_start, Conversation.created_at < yesterday_end
         )
@@ -193,16 +324,16 @@ def get_conversation_metrics(
             "total_duration": 0,
             "total_agents": 0,
             "agents_change_percent": 0,
-            "avg_response_time": 1.2,
-            "response_time_change_percent": -4.1,
+            "avg_response_time": 0.0,
+            "response_time_change_percent": 0.0,
         }
 
-    conversations = db.query(Conversation).all()
+    conversations = base_query.all()
     sentiments = [c.sentiment for c in conversations if c.sentiment is not None]
     avg_sentiment = sum(sentiments) / len(sentiments) if sentiments else 0
 
     yesterday_conversations = (
-        db.query(Conversation)
+        base_query
         .filter(
             Conversation.created_at >= yesterday_start, Conversation.created_at < yesterday_end
         )
@@ -224,21 +355,47 @@ def get_conversation_metrics(
 
     total_duration = sum(c.duration or 0 for c in conversations)
 
+    # Get unique agents only from conversations filtered by receiver_number
     unique_agents = {c.agent for c in conversations if c.agent}
     yesterday_unique_agents = {c.agent for c in yesterday_conversations if c.agent}
+    
+    # Count only agents that appear in this user's conversations
+    total_agents = len(unique_agents)
+    
+    # Calculate agents change percent
+    if len(yesterday_unique_agents) > 0:
+        agents_change = ((total_agents - len(yesterday_unique_agents)) / len(yesterday_unique_agents)) * 100
+    elif total_agents > 0:
+        agents_change = 100.0
+    else:
+        agents_change = 0.0
 
-    try:
-        agents = elevenlabs_client.get_agents()
-        total_agents = len(agents) if agents else len(unique_agents)
-        agents_change = 0
-    except Exception:
-        total_agents = len(unique_agents)
-        if len(yesterday_unique_agents) > 0:
-            agents_change = ((total_agents - len(yesterday_unique_agents)) / len(yesterday_unique_agents)) * 100
-        elif total_agents > 0:
-            agents_change = 100
+    # Calculate average response time estimate from conversation duration and count
+    # If we have conversations with duration, estimate response time as avg duration per conversation
+    # This is a rough estimate - actual response time would need to come from ElevenLabs API
+    conversations_with_duration = [c for c in conversations if c.duration and c.duration > 0]
+    if conversations_with_duration:
+        # Estimate response time as average conversation duration divided by a factor
+        # Assuming an average conversation has multiple turns, divide by 10 as rough estimate
+        avg_response_time = sum(c.duration for c in conversations_with_duration) / len(conversations_with_duration) / 10
+        # Cap at reasonable maximum (e.g., 5 seconds)
+        avg_response_time = min(avg_response_time, 5.0)
+        
+        # Calculate yesterday's response time for comparison
+        yesterday_conv_with_duration = [c for c in yesterday_conversations if c.duration and c.duration > 0]
+        if yesterday_conv_with_duration:
+            avg_yesterday_response_time = sum(c.duration for c in yesterday_conv_with_duration) / len(yesterday_conv_with_duration) / 10
+            avg_yesterday_response_time = min(avg_yesterday_response_time, 5.0)
+            if avg_yesterday_response_time > 0:
+                response_time_change = ((avg_response_time - avg_yesterday_response_time) / avg_yesterday_response_time) * 100
+            else:
+                response_time_change = 0.0
         else:
-            agents_change = 0
+            response_time_change = 0.0
+    else:
+        # No conversation data available
+        avg_response_time = 0.0
+        response_time_change = 0.0
 
     return {
         "total_conversations": total,
@@ -249,8 +406,8 @@ def get_conversation_metrics(
         "total_duration": total_duration,
         "total_agents": total_agents,
         "agents_change_percent": round(agents_change, 1),
-        "avg_response_time": 1.2,
-        "response_time_change_percent": -4.1,
+        "avg_response_time": round(avg_response_time, 1),
+        "response_time_change_percent": round(response_time_change, 1),
     }
 
 
@@ -457,11 +614,69 @@ def sync_elevenlabs(
 @app.get("/agents", response_model=List[AgentResponse])
 def get_agents(
     current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
 ):
-    """Get all agents from ElevenLabs"""
+    """Get agents from ElevenLabs, filtered by user's receiver_number if mapped"""
     agents = elevenlabs_client.get_agents()
     if not agents:
         return []
+    
+    # If user has receiver_number mapped, filter agents to only show those used in their conversations
+    if current_user.receiver_number:
+        # Get all unique agent names/IDs from conversations with this receiver_number
+        conversations = (
+            db.query(Conversation)
+            .filter(Conversation.receiver_number == current_user.receiver_number)
+            .filter(Conversation.agent.isnot(None))
+            .all()
+        )
+        
+        # Extract unique agent identifiers (names or IDs) from conversations
+        allowed_agent_identifiers = {conv.agent for conv in conversations if conv.agent}
+        
+        if not allowed_agent_identifiers:
+            # No conversations found for this receiver_number, return empty list
+            return []
+        
+        # Build a map of agent_id -> agent_name and agent_name -> agent_id for matching
+        agent_id_to_name = {}
+        agent_name_to_id = {}
+        for agent in agents:
+            agent_id = agent.get("agent_id") or agent.get("id") or ""
+            agent_name = agent.get("name") or ""
+            if agent_id:
+                agent_id_to_name[agent_id] = agent_name
+            if agent_name:
+                agent_name_to_id[agent_name] = agent_id
+        
+        # Find all agent IDs that match the allowed identifiers
+        allowed_agent_ids = set()
+        for identifier in allowed_agent_identifiers:
+            # Check if identifier is an agent ID
+            if identifier in agent_id_to_name:
+                allowed_agent_ids.add(identifier)
+            # Check if identifier is an agent name
+            elif identifier in agent_name_to_id:
+                allowed_agent_ids.add(agent_name_to_id[identifier])
+            # Also check if any agent name matches (case-insensitive)
+            for agent_name, agent_id in agent_name_to_id.items():
+                if agent_name.lower() == identifier.lower():
+                    allowed_agent_ids.add(agent_id)
+        
+        # Filter agents to only those that appear in user's conversations
+        filtered_agents = []
+        for agent in agents:
+            agent_id = agent.get("agent_id") or agent.get("id") or ""
+            agent_name = agent.get("name") or ""
+            
+            # Include agent if its ID or name matches any allowed identifier
+            if (agent_id in allowed_agent_ids or 
+                agent_id in allowed_agent_identifiers or
+                agent_name in allowed_agent_identifiers or
+                any(agent_name.lower() == ident.lower() for ident in allowed_agent_identifiers)):
+                filtered_agents.append(agent)
+        
+        agents = filtered_agents
     
     # Transform agents to match our response schema
     agent_list = []
@@ -965,29 +1180,83 @@ def sync_conversations(db: Session) -> int:
             if isinstance(conv_data.get("agent"), dict):
                 agent_name = conv_data["agent"].get("name", "")
         
-        # Extract caller number from metadata
+        # Extract caller and receiver numbers from metadata
+        # Try multiple possible locations in the response
         metadata = conv_data.get("metadata", {}) or {}
         phone_call = metadata.get("phone_call") or {}
-        caller_number = phone_call.get("external_number", "")
-        receiver_number = phone_call.get("agent_number", "")
         
-        duration = conv_data.get("call_duration_secs", 0)
+        # Try different field names that ElevenLabs might use
+        caller_number = (
+            phone_call.get("external_number") or 
+            phone_call.get("caller_number") or 
+            phone_call.get("from_number") or
+            conv_data.get("caller_number") or
+            conv_data.get("external_number") or
+            ""
+        )
+        receiver_number = (
+            phone_call.get("agent_number") or 
+            phone_call.get("receiver_number") or 
+            phone_call.get("to_number") or
+            phone_call.get("destination_number") or
+            conv_data.get("receiver_number") or
+            conv_data.get("agent_number") or
+            ""
+        )
+        
+        # If phone numbers are missing from list response, fetch full conversation details
+        if not caller_number or not receiver_number:
+            full_conv = elevenlabs_client.get_conversation(conv_id)
+            if full_conv:
+                full_metadata = full_conv.get("metadata", {}) or {}
+                full_phone_call = full_metadata.get("phone_call") or {}
+                
+                # Try all possible field names
+                if not caller_number:
+                    caller_number = (
+                        full_phone_call.get("external_number") or 
+                        full_phone_call.get("caller_number") or 
+                        full_phone_call.get("from_number") or
+                        full_conv.get("caller_number") or
+                        full_conv.get("external_number") or
+                        ""
+                    )
+                if not receiver_number:
+                    receiver_number = (
+                        full_phone_call.get("agent_number") or 
+                        full_phone_call.get("receiver_number") or 
+                        full_phone_call.get("to_number") or
+                        full_phone_call.get("destination_number") or
+                        full_conv.get("receiver_number") or
+                        full_conv.get("agent_number") or
+                        ""
+                    )
+        
+        duration = conv_data.get("call_duration_secs") or conv_data.get("duration") or 0
         sentiment = conv_data.get("sentiment_score") or conv_data.get("sentiment")
 
         if existing:
-            existing.agent = agent_name or existing.agent
-            existing.caller_number = caller_number or existing.caller_number
-            existing.receiver_number = receiver_number or existing.receiver_number
-            existing.duration = duration or existing.duration
-            existing.sentiment = sentiment or existing.sentiment
+            # Always update fields if we have values from API
+            if agent_name:
+                existing.agent = agent_name
+            # Update caller_number if we got a value (even if it's different from existing)
+            if caller_number:
+                existing.caller_number = caller_number
+            # Update receiver_number if we got a value (even if it's different from existing)
+            if receiver_number:
+                existing.receiver_number = receiver_number
+            if duration:
+                existing.duration = duration
+            if sentiment is not None:
+                existing.sentiment = sentiment
             existing.created_at = created_at
         else:
             conversation = Conversation(
                 conversation_id=conv_id,
-                agent=agent_name,
-                caller_number=caller_number,
-                receiver_number=receiver_number,
-                duration=duration,
+                agent=agent_name if agent_name else None,
+                caller_number=caller_number if caller_number else None,
+                receiver_number=receiver_number if receiver_number else None,
+                duration=duration if duration else None,
                 sentiment=sentiment,
                 created_at=created_at,
             )
@@ -996,6 +1265,125 @@ def sync_conversations(db: Session) -> int:
 
     db.commit()
     return count
+
+
+# Prompt Template Endpoints
+@app.post("/prompt-templates", response_model=PromptTemplateResponse)
+def create_prompt_template(
+    template_data: PromptTemplateCreate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Create a new prompt template for the current user"""
+    # Check if template with same name already exists for this user
+    existing = db.query(PromptTemplate).filter(
+        PromptTemplate.name == template_data.name,
+        PromptTemplate.user_id == current_user.id
+    ).first()
+    if existing:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="A prompt template with this name already exists for your account"
+        )
+    
+    prompt_template = PromptTemplate(
+        user_id=current_user.id,
+        name=template_data.name,
+        system_prompt=template_data.system_prompt,
+        first_message=template_data.first_message,
+    )
+    db.add(prompt_template)
+    db.commit()
+    db.refresh(prompt_template)
+    return prompt_template
+
+
+@app.get("/prompt-templates", response_model=List[PromptTemplateResponse])
+def get_prompt_templates(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Get all prompt templates for the current user"""
+    templates = db.query(PromptTemplate).filter(
+        PromptTemplate.user_id == current_user.id
+    ).order_by(PromptTemplate.created_at.desc()).all()
+    return templates
+
+
+@app.get("/prompt-templates/{template_id}", response_model=PromptTemplateResponse)
+def get_prompt_template(
+    template_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Get a specific prompt template (only if it belongs to the current user)"""
+    template = db.query(PromptTemplate).filter(
+        PromptTemplate.id == template_id,
+        PromptTemplate.user_id == current_user.id
+    ).first()
+    if not template:
+        raise HTTPException(status_code=404, detail="Prompt template not found")
+    return template
+
+
+@app.put("/prompt-templates/{template_id}", response_model=PromptTemplateResponse)
+def update_prompt_template(
+    template_id: int,
+    template_data: PromptTemplateUpdate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Update a prompt template (only if it belongs to the current user)"""
+    template = db.query(PromptTemplate).filter(
+        PromptTemplate.id == template_id,
+        PromptTemplate.user_id == current_user.id
+    ).first()
+    if not template:
+        raise HTTPException(status_code=404, detail="Prompt template not found")
+    
+    # Check if name is being changed and if new name already exists for this user
+    if template_data.name is not None and template_data.name != template.name:
+        existing = db.query(PromptTemplate).filter(
+            PromptTemplate.name == template_data.name,
+            PromptTemplate.user_id == current_user.id,
+            PromptTemplate.id != template_id
+        ).first()
+        if existing:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="A prompt template with this name already exists for your account"
+            )
+        template.name = template_data.name
+    
+    if template_data.system_prompt is not None:
+        template.system_prompt = template_data.system_prompt
+    
+    if template_data.first_message is not None:
+        template.first_message = template_data.first_message
+    
+    template.updated_at = datetime.utcnow()
+    db.commit()
+    db.refresh(template)
+    return template
+
+
+@app.delete("/prompt-templates/{template_id}")
+def delete_prompt_template(
+    template_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Delete a prompt template (only if it belongs to the current user)"""
+    template = db.query(PromptTemplate).filter(
+        PromptTemplate.id == template_id,
+        PromptTemplate.user_id == current_user.id
+    ).first()
+    if not template:
+        raise HTTPException(status_code=404, detail="Prompt template not found")
+    
+    db.delete(template)
+    db.commit()
+    return {"message": "Prompt template deleted successfully"}
 
 
 if __name__ == "__main__":

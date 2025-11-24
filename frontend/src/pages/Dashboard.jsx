@@ -19,8 +19,8 @@ const Dashboard = () => {
     total_duration: 0,
     total_agents: 0,
     agents_change_percent: 0,
-    avg_response_time: 1.2,
-    response_time_change_percent: -4.1
+    avg_response_time: 0,
+    response_time_change_percent: 0
   })
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
@@ -48,8 +48,8 @@ const Dashboard = () => {
         total_duration: response.data?.total_duration || 0,
         total_agents: response.data?.total_agents || 0,
         agents_change_percent: response.data?.agents_change_percent || 0,
-        avg_response_time: response.data?.avg_response_time || 1.2,
-        response_time_change_percent: response.data?.response_time_change_percent || -4.1
+    avg_response_time: response.data?.avg_response_time || 0,
+    response_time_change_percent: response.data?.response_time_change_percent || 0
       })
     } catch (error) {
       console.error('Error fetching metrics:', error)
@@ -57,6 +57,14 @@ const Dashboard = () => {
     } finally {
       setLoading(false)
     }
+  }
+
+  // Helper function to get local date string (YYYY-MM-DD) without timezone conversion
+  const getLocalDateString = (date) => {
+    const year = date.getFullYear()
+    const month = String(date.getMonth() + 1).padStart(2, '0')
+    const day = String(date.getDate()).padStart(2, '0')
+    return `${year}-${month}-${day}`
   }
 
   const fetchVolumeData = async () => {
@@ -73,7 +81,7 @@ const Dashboard = () => {
         const day = new Date(today)
         day.setDate(today.getDate() - (6 - index))
         return {
-          key: day.toISOString().slice(0, 10),
+          key: getLocalDateString(day),
           label: day.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
           value: 0,
         }
@@ -82,7 +90,8 @@ const Dashboard = () => {
       conversations.forEach((conversation) => {
         if (!conversation.created_at) return
         const convDate = new Date(conversation.created_at)
-        const key = convDate.toISOString().slice(0, 10)
+        // Use local date string to match with day buckets
+        const key = getLocalDateString(convDate)
         const targetDay = lastSevenDays.find((day) => day.key === key)
         if (targetDay) {
           targetDay.value += 1
@@ -211,7 +220,11 @@ const Dashboard = () => {
           <div className="flex items-start justify-between">
             <div className="flex-1">
               <p className="text-[11px] font-medium text-gray-500 uppercase tracking-wide mb-0.5">Avg Response Time</p>
-              <p className="text-xl font-semibold text-gray-900">{(metrics.avg_response_time || 1.2).toFixed(1)}s</p>
+              <p className="text-xl font-semibold text-gray-900">
+                {metrics.avg_response_time && metrics.avg_response_time > 0 
+                  ? `${metrics.avg_response_time.toFixed(1)}s` 
+                  : 'N/A'}
+              </p>
               {metrics.response_time_change_percent !== 0 && (
                 <div className={`flex items-center text-[11px] ${metrics.response_time_change_percent >= 0 ? 'text-red-600' : 'text-green-600'}`}>
                   {metrics.response_time_change_percent >= 0 ? (

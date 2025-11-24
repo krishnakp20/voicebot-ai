@@ -5,6 +5,8 @@ import { XMarkIcon } from '@heroicons/react/24/outline'
 const AgentForm = ({ agent, onClose }) => {
   const [loading, setLoading] = useState(false)
   const [loadingData, setLoadingData] = useState(false)
+  const [promptTemplates, setPromptTemplates] = useState([])
+  const [selectedTemplateId, setSelectedTemplateId] = useState('')
   const [formData, setFormData] = useState({
     name: '',
     system_prompt: '',
@@ -17,6 +19,19 @@ const AgentForm = ({ agent, onClose }) => {
     llm_model: 'gpt-4o-mini',
   })
   
+  // Fetch prompt templates
+  useEffect(() => {
+    const fetchPromptTemplates = async () => {
+      try {
+        const response = await api.get('/prompt-templates')
+        setPromptTemplates(response.data)
+      } catch (error) {
+        console.error('Error fetching prompt templates:', error)
+      }
+    }
+    fetchPromptTemplates()
+  }, [])
+
   // Debug: log formData changes
   useEffect(() => {
     console.log('FormData state changed:', {
@@ -135,6 +150,29 @@ const AgentForm = ({ agent, onClose }) => {
       ...prev,
       [name]: value
     }))
+  }
+
+  const handleTemplateSelect = (e) => {
+    const templateId = e.target.value
+    setSelectedTemplateId(templateId)
+    
+    if (templateId) {
+      const selectedTemplate = promptTemplates.find(t => t.id === parseInt(templateId))
+      if (selectedTemplate) {
+        setFormData(prev => ({
+          ...prev,
+          system_prompt: selectedTemplate.system_prompt || '',
+          first_message: selectedTemplate.first_message || '',
+        }))
+      }
+    } else {
+      // If "None" is selected, clear the fields
+      setFormData(prev => ({
+        ...prev,
+        system_prompt: '',
+        first_message: '',
+      }))
+    }
   }
 
   const handleSubmit = async (e) => {
@@ -278,6 +316,30 @@ const AgentForm = ({ agent, onClose }) => {
                 Editing an existing agent only updates the system prompt and first message.
               </p>
             )}
+          </div>
+
+          {/* Prompt Template Selection */}
+          <div>
+            <label htmlFor="prompt_template" className="block text-sm font-medium text-gray-700 mb-2">
+              Select Prompt Template (Optional)
+            </label>
+            <select
+              id="prompt_template"
+              name="prompt_template"
+              value={selectedTemplateId}
+              onChange={handleTemplateSelect}
+              className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+            >
+              <option value="">-- Select a template or create custom --</option>
+              {promptTemplates.map((template) => (
+                <option key={template.id} value={template.id}>
+                  {template.name}
+                </option>
+              ))}
+            </select>
+            <p className="mt-1 text-sm text-gray-500">
+              Choose a prompt template to pre-fill the system prompt and first message. You can still edit them after selection.
+            </p>
           </div>
 
           {/* System Prompt */}

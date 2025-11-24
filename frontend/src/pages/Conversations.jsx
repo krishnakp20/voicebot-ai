@@ -259,6 +259,9 @@ const Conversations = () => {
                 Customer Number
               </th>
               <th className="px-4 py-3 text-left text-[11px] font-semibold text-gray-500 uppercase tracking-wide">
+                Receiver Number
+              </th>
+              <th className="px-4 py-3 text-left text-[11px] font-semibold text-gray-500 uppercase tracking-wide">
                 Date/Time
               </th>
               <th className="px-4 py-3 text-left text-[11px] font-semibold text-gray-500 uppercase tracking-wide">
@@ -281,7 +284,7 @@ const Conversations = () => {
           <tbody className="bg-white divide-y divide-gray-200">
             {filteredConversations.length === 0 ? (
               <tr>
-                <td colSpan="7" className="px-4 py-4 text-center text-gray-500 text-sm">
+                <td colSpan="8" className="px-4 py-4 text-center text-gray-500 text-sm">
                   No conversations found
                 </td>
               </tr>
@@ -297,6 +300,9 @@ const Conversations = () => {
                         {conv.caller_number || 'N/A'}
                       </div>
                     </div>
+                  </td>
+                  <td className="px-4 py-3 whitespace-nowrap text-gray-900">
+                    {conv.receiver_number || 'N/A'}
                   </td>
                   <td className="px-4 py-3 whitespace-nowrap text-gray-900">
                     {formatDate(conv.created_at)}

@@ -10,6 +10,8 @@ class User(Base):
     name = Column(String(255), nullable=False)
     email = Column(String(255), unique=True, index=True, nullable=False)
     password_hash = Column(String(255), nullable=False)
+    receiver_number = Column(String(50), nullable=True, index=True)
+    receiver_name = Column(String(255), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
 class Conversation(Base):
@@ -31,5 +33,19 @@ class Transcript(Base):
     conversation_id = Column(String(255), index=True, nullable=False)
     text = Column(Text, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
+
+class PromptTemplate(Base):
+    __tablename__ = "prompt_templates"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    name = Column(String(255), nullable=False)
+    system_prompt = Column(Text, nullable=False)
+    first_message = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    # Unique constraint: each user can have templates with unique names
+    # This is enforced at the application level and can be added to DB if needed
 
 
