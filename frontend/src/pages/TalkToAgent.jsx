@@ -12,57 +12,83 @@ const TalkToAgent = () => {
   const [error, setError] = useState(null)
   const [widgetReady, setWidgetReady] = useState(false)
   const [widgetLoaded, setWidgetLoaded] = useState(false)
+  const [diagnostics, setDiagnostics] = useState([])
   const widgetContainerRef = useRef(null)
   const scriptLoadedRef = useRef(false)
   const checkIntervalRef = useRef(null)
+  
+  const addDiagnostic = (message, type = 'info') => {
+    const timestamp = new Date().toLocaleTimeString()
+    setDiagnostics(prev => [...prev, { timestamp, message, type }])
+    console.log(`[${timestamp}] ${message}`)
+  }
 
   useEffect(() => {
-    console.log('TalkToAgent mounted, agentId:', agentId)
-    console.log('Current domain:', window.location.hostname)
+    addDiagnostic('Component mounted', 'info')
+    addDiagnostic(`Current domain: ${window.location.hostname}`, 'info')
+    addDiagnostic(`Agent ID: ${agentId || 'none'}`, 'info')
     
     // Check if widget script is already loaded (from index.html)
     const checkScriptLoaded = () => {
       const existingScript = document.querySelector('script[src*="convai-widget-embed"]')
       if (existingScript) {
-        console.log('Widget script found in DOM')
-        // Check if custom element is registered
-        if (customElements.get('elevenlabs-convai')) {
-          console.log('Custom element already registered')
-          scriptLoadedRef.current = true
-          setWidgetReady(true)
-          if (agentId) {
-            setTimeout(() => createWidget(agentId), 500)
-          }
-        } else {
-          // Wait for script to load and register custom element
-          console.log('Waiting for custom element registration...')
-          const checkInterval = setInterval(() => {
-            if (customElements.get('elevenlabs-convai')) {
-              console.log('Custom element registered')
-              clearInterval(checkInterval)
-              scriptLoadedRef.current = true
-              setWidgetReady(true)
-              if (agentId) {
-                createWidget(agentId)
+        addDiagnostic('Widget script found in DOM', 'success')
+        addDiagnostic(`Script src: ${existingScript.src}`, 'info')
+        
+        // Wait for script to fully load (especially if it's a module)
+        const scriptLoadCheck = () => {
+          // Check if custom element is registered
+          if (customElements.get('elevenlabs-convai')) {
+            addDiagnostic('Custom element registered', 'success')
+            scriptLoadedRef.current = true
+            setWidgetReady(true)
+            if (agentId) {
+              setTimeout(() => createWidget(agentId), 500)
+            }
+          } else {
+            // Wait for script to load and register custom element
+            addDiagnostic('Waiting for custom element registration...', 'info')
+            let attempts = 0
+            const maxAttempts = 20 // 10 seconds total
+            
+            const checkInterval = setInterval(() => {
+              attempts++
+              if (customElements.get('elevenlabs-convai')) {
+                addDiagnostic('Custom element registered', 'success')
+                clearInterval(checkInterval)
+                scriptLoadedRef.current = true
+                setWidgetReady(true)
+                if (agentId) {
+                  createWidget(agentId)
+                }
+              } else if (attempts >= maxAttempts) {
+                addDiagnostic('Custom element not registered after 10 seconds', 'error')
+                addDiagnostic('Available custom elements: ' + Array.from(customElements.entries?.() || []).join(', '), 'error')
+                clearInterval(checkInterval)
+                setError('Widget script loaded but custom element not registered. Check browser console for errors.')
               }
-            }
-          }, 500)
-          
-          // Timeout after 10 seconds
-          setTimeout(() => {
-            clearInterval(checkInterval)
-            if (!customElements.get('elevenlabs-convai')) {
-              console.error('Custom element not registered after 10 seconds')
-              setError('Widget script failed to load. Please refresh the page.')
-            }
-          }, 10000)
+            }, 500)
+          }
+        }
+        
+        // If script is already loaded, check immediately
+        if (existingScript.complete || existingScript.readyState === 'complete') {
+          scriptLoadCheck()
+        } else {
+          // Wait for script to load
+          existingScript.addEventListener('load', scriptLoadCheck)
+          existingScript.addEventListener('error', () => {
+            addDiagnostic('Script failed to load', 'error')
+            setError('Failed to load widget script. Please check your internet connection.')
+          })
         }
       } else {
         // Script not in DOM, wait for it (it's loaded from index.html)
-        console.log('Waiting for widget script to load from index.html...')
+        addDiagnostic('Waiting for widget script to load from index.html...', 'info')
         const checkScript = setInterval(() => {
           const script = document.querySelector('script[src*="convai-widget-embed"]')
           if (script) {
+            addDiagnostic('Script found, checking registration...', 'info')
             clearInterval(checkScript)
             checkScriptLoaded()
           }
@@ -71,6 +97,7 @@ const TalkToAgent = () => {
         setTimeout(() => {
           clearInterval(checkScript)
           if (!document.querySelector('script[src*="convai-widget-embed"]')) {
+            addDiagnostic('Widget script not found after 10 seconds', 'error')
             setError('Widget script not found. Please ensure the script is loaded.')
           }
         }, 10000)
@@ -110,7 +137,13 @@ const TalkToAgent = () => {
   }, [agentId, widgetLoaded, error])
 
   const createWidget = (agentIdValue) => {
-    if (!widgetContainerRef.current) return
+    if (!widgetContainerRef.current) {
+      console.error('Widget container ref not available')
+      return
+    }
+    
+    console.log('Creating widget for agent:', agentIdValue)
+    console.log('Container element:', widgetContainerRef.current)
     
     // Clear existing widget
     widgetContainerRef.current.innerHTML = ''
@@ -118,109 +151,126 @@ const TalkToAgent = () => {
     // Wait for custom element to be registered
     setTimeout(() => {
       try {
-        if (customElements.get('elevenlabs-convai')) {
+        const customElementDefined = customElements.get('elevenlabs-convai')
+        console.log('Custom element check:', {
+          defined: !!customElementDefined,
+          allCustomElements: Array.from(customElements.entries?.() || [])
+        })
+        
+        if (customElementDefined) {
+          addDiagnostic('Creating widget element...', 'info')
           const widgetElement = document.createElement('elevenlabs-convai')
           widgetElement.setAttribute('agent-id', agentIdValue)
+          
+          // Add event listeners to debug
+          widgetElement.addEventListener('error', (e) => {
+            addDiagnostic('Widget error event: ' + (e.message || 'Unknown'), 'error')
+            console.error('Widget error event:', e)
+            setError('Widget error: ' + (e.message || 'Unknown error'))
+          })
+          
+          // Listen for any console errors from the widget
+          const originalError = console.error
+          console.error = (...args) => {
+            if (args.some(arg => typeof arg === 'string' && (arg.includes('elevenlabs') || arg.includes('convai') || arg.includes('agent')))) {
+              addDiagnostic('Console error: ' + args.join(' '), 'error')
+            }
+            originalError.apply(console, args)
+          }
+          
           widgetContainerRef.current.appendChild(widgetElement)
-          console.log('Widget created for agent:', agentIdValue)
+          console.log('Widget element appended to DOM:', {
+            element: widgetElement,
+            parent: widgetContainerRef.current,
+            agentId: agentIdValue
+          })
           setError(null)
           
-          // Check if widget actually rendered after a delay
+          // Check widget rendering with multiple attempts
+          let checkCount = 0
+          const maxChecks = 10
+          const checkWidget = () => {
+            checkCount++
+            const widget = widgetContainerRef.current?.querySelector('elevenlabs-convai')
+            console.log(`Widget check #${checkCount}:`, {
+              found: !!widget,
+              offsetHeight: widget?.offsetHeight,
+              offsetWidth: widget?.offsetWidth,
+              innerHTML: widget?.innerHTML?.substring(0, 50),
+              shadowRoot: widget?.shadowRoot ? 'exists' : 'none',
+              computedStyle: widget ? window.getComputedStyle(widget).display : 'N/A'
+            })
+            
+            if (widget) {
+              const hasContent = widget.offsetHeight > 0 || 
+                                widget.shadowRoot || 
+                                widget.innerHTML.trim().length > 0 ||
+                                window.getComputedStyle(widget).display !== 'none'
+              
+              if (hasContent) {
+                setWidgetLoaded(true)
+                console.log('✓ Widget successfully rendered!')
+                return
+              }
+            }
+            
+            if (checkCount < maxChecks) {
+              setTimeout(checkWidget, 1000)
+            } else {
+              console.error('Widget failed to render after', maxChecks, 'checks')
+              // Check for specific error messages in console
+              setError('Widget not rendering after multiple attempts. Please check: 1) Domain is allowlisted (callai.dialdesk.in), 2) Browser console for errors, 3) Network tab for failed requests.')
+            }
+          }
+          
+          // Start checking after initial delay
+          setTimeout(checkWidget, 1000)
+        } else {
+          // Custom element not registered
+          console.error('Custom element elevenlabs-convai is not registered!')
+          console.log('Available custom elements:', Array.from(customElements.entries?.() || []))
+          console.log('Scripts in DOM:', Array.from(document.querySelectorAll('script')).map(s => s.src))
+          
+          // Try innerHTML approach as fallback
+          console.log('Attempting fallback: innerHTML approach')
+          widgetContainerRef.current.innerHTML = `<elevenlabs-convai agent-id="${agentIdValue}"></elevenlabs-convai>`
+          
           setTimeout(() => {
             const widget = widgetContainerRef.current?.querySelector('elevenlabs-convai')
             if (widget) {
-              console.log('Widget element found:', {
-                offsetHeight: widget.offsetHeight,
-                offsetWidth: widget.offsetWidth,
-                innerHTML: widget.innerHTML?.substring(0, 100),
-                shadowRoot: widget.shadowRoot ? 'exists' : 'none'
-              })
-              
-              // Check if widget has content (either direct content or shadow DOM)
+              console.log('Fallback widget element found')
               if (widget.offsetHeight > 0 || widget.shadowRoot || widget.innerHTML.trim().length > 0) {
                 setWidgetLoaded(true)
-                console.log('Widget successfully rendered')
               } else {
-                console.warn('Widget element created but not rendering - checking for shadow DOM...')
-                // Wait a bit more for shadow DOM to initialize
-                setTimeout(() => {
-                  if (widget.shadowRoot || widget.offsetHeight > 0) {
-                    setWidgetLoaded(true)
-                  } else {
-                    setError('Widget not rendering. Please ensure your domain (callai.dialdesk.in) is allowlisted in ElevenLabs agent settings.')
-                  }
-                }, 3000)
+                setError('Widget script may not be loaded. Please refresh the page and check browser console.')
               }
             } else {
-              console.warn('Widget element not found in container')
-              setError('Widget element not found. Please refresh the page.')
+              setError('Failed to create widget element. Please refresh the page.')
             }
-          }, 2000)
-        } else {
-          // Custom element not registered yet, wait and retry
-          console.warn('Custom element not registered, waiting...')
-          setTimeout(() => {
-            if (customElements.get('elevenlabs-convai')) {
-              createWidget(agentIdValue)
-            } else {
-              // Try innerHTML approach as last resort
-              widgetContainerRef.current.innerHTML = `<elevenlabs-convai agent-id="${agentIdValue}"></elevenlabs-convai>`
-              console.log('Widget created via innerHTML (fallback)')
-              
-              // Check if it rendered
-              setTimeout(() => {
-                const widget = widgetContainerRef.current?.querySelector('elevenlabs-convai')
-                if (widget) {
-                  if (widget.offsetHeight > 0 || widget.shadowRoot || widget.innerHTML.trim().length > 0) {
-                    setWidgetLoaded(true)
-                  } else {
-                    setError('Widget not rendering. Please ensure your domain (callai.dialdesk.in) is allowlisted in ElevenLabs agent settings.')
-                  }
-                } else {
-                  setError('Widget element not found. Please refresh the page.')
-                }
-              }, 3000)
-            }
-          }, 2000)
+          }, 3000)
         }
       } catch (err) {
         console.error('Error creating widget:', err)
-        setError('Widget failed to load. Please ensure your domain (callai.dialdesk.in) is allowlisted in ElevenLabs agent settings.')
+        console.error('Error stack:', err.stack)
+        setError('Widget failed to load: ' + err.message)
       }
-    }, 200)
+    }, 500)
   }
   
-  // Check widget status periodically
+  // Monitor network errors
   useEffect(() => {
-    if (agentId && widgetReady) {
-      checkIntervalRef.current = setInterval(() => {
-        const widget = widgetContainerRef.current?.querySelector('elevenlabs-convai')
-        if (widget && widget.offsetHeight > 0 && !widgetLoaded) {
-          setWidgetLoaded(true)
-          setError(null)
-          if (checkIntervalRef.current) {
-            clearInterval(checkIntervalRef.current)
-          }
+    const handleError = (event) => {
+      if (event.target && event.target.tagName === 'SCRIPT') {
+        console.error('Script load error:', event.target.src)
+        if (event.target.src.includes('elevenlabs') || event.target.src.includes('convai')) {
+          setError('Failed to load widget script. Please check your internet connection.')
         }
-      }, 1000)
-      
-      // Timeout after 10 seconds
-      setTimeout(() => {
-        if (checkIntervalRef.current) {
-          clearInterval(checkIntervalRef.current)
-        }
-        if (!widgetLoaded) {
-          setError('Widget is taking too long to load. Please ensure callai.dialdesk.in is allowlisted in ElevenLabs agent settings.')
-        }
-      }, 10000)
-    }
-    
-    return () => {
-      if (checkIntervalRef.current) {
-        clearInterval(checkIntervalRef.current)
       }
     }
-  }, [agentId, widgetReady, widgetLoaded])
+    
+    window.addEventListener('error', handleError, true)
+    return () => window.removeEventListener('error', handleError, true)
+  }, [])
 
   const fetchAgents = async () => {
     try {
@@ -315,6 +365,32 @@ const TalkToAgent = () => {
       {error && (
         <div className="bg-red-50 border-l-4 border-red-400 p-4 mx-4 mt-4 rounded">
           <p className="text-sm text-red-700">{error}</p>
+        </div>
+      )}
+
+      {/* Diagnostics Panel - Always visible when there are diagnostics */}
+      {diagnostics.length > 0 && (
+        <div className="bg-gray-900 text-green-400 p-4 mx-4 mt-2 rounded font-mono text-xs max-h-40 overflow-y-auto border border-gray-700">
+          <div className="font-bold mb-2 text-white">Debug Logs (Check Console for Details):</div>
+          {diagnostics.slice(-8).map((diag, idx) => (
+            <div key={idx} className={diag.type === 'error' ? 'text-red-400' : diag.type === 'success' ? 'text-green-400' : 'text-gray-400'}>
+              [{diag.timestamp}] {diag.message}
+            </div>
+          ))}
+          <button
+            onClick={() => {
+              console.log('=== Full Diagnostics ===')
+              console.log('Domain:', window.location.hostname)
+              console.log('Agent ID:', agentId)
+              console.log('Script loaded:', !!document.querySelector('script[src*="convai-widget-embed"]'))
+              console.log('Custom element registered:', !!customElements.get('elevenlabs-convai'))
+              console.log('Widget element:', widgetContainerRef.current?.querySelector('elevenlabs-convai'))
+              console.log('All scripts:', Array.from(document.querySelectorAll('script')).map(s => s.src))
+            }}
+            className="mt-2 px-3 py-1 bg-blue-600 text-white rounded text-xs hover:bg-blue-700"
+          >
+            Log Full Details to Console
+          </button>
         </div>
       )}
 
