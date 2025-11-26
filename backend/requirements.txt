@@ -10,4 +10,6 @@ pydantic==2.5.0
 pydantic[email]==2.5.0
 requests==2.31.0
 cryptography==41.0.7
+# Optional: For advanced text chat features with OpenAI
+# openai>=1.0.0
 

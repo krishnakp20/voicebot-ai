@@ -5,6 +5,7 @@ import Conversations from './pages/Conversations'
 import ConversationDetail from './pages/ConversationDetail'
 import Agents from './pages/Agents'
 import Prompts from './pages/Prompts'
+import TalkToAgent from './pages/TalkToAgent'
 import ProtectedRoute from './components/ProtectedRoute'
 import Layout from './components/Layout'
 
@@ -28,6 +29,23 @@ function App() {
           <Route path="agents" element={<Agents />} />
           <Route path="prompts" element={<Prompts />} />
         </Route>
+        {/* Talk to Agent route - full screen, no sidebar */}
+        <Route
+          path="/talk-to"
+          element={
+            <ProtectedRoute>
+              <TalkToAgent />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/talk-to/:agentId"
+          element={
+            <ProtectedRoute>
+              <TalkToAgent />
+            </ProtectedRoute>
+          }
+        />
       </Routes>
     </Router>
   )

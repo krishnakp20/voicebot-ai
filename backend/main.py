@@ -1,12 +1,16 @@
 from datetime import datetime, timedelta, date
-from typing import List
+from typing import List, Dict, Optional
 
 import requests
-from fastapi import FastAPI, Depends, HTTPException, status
+from fastapi import FastAPI, Depends, HTTPException, status, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
+import json
+import asyncio
+import base64
+import io
 
 from database import SessionLocal, engine, Base
 from models import User, Conversation, Transcript, PromptTemplate
@@ -1384,6 +1388,78 @@ def delete_prompt_template(
     db.delete(template)
     db.commit()
     return {"message": "Prompt template deleted successfully"}
+
+
+
+@app.get("/chat/agents")
+def get_chat_agents(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Get list of agents available for chat"""
+    agents = elevenlabs_client.get_agents()
+    if not agents:
+        return []
+    
+    # Filter by user's receiver_number if mapped (same logic as /agents endpoint)
+    if current_user.receiver_number:
+        conversations = (
+            db.query(Conversation)
+            .filter(Conversation.receiver_number == current_user.receiver_number)
+            .filter(Conversation.agent.isnot(None))
+            .all()
+        )
+        
+        allowed_agent_identifiers = {conv.agent for conv in conversations if conv.agent}
+        
+        if not allowed_agent_identifiers:
+            return []
+        
+        agent_id_to_name = {}
+        agent_name_to_id = {}
+        for agent in agents:
+            agent_id = agent.get("agent_id") or agent.get("id") or ""
+            agent_name = agent.get("name") or ""
+            if agent_id:
+                agent_id_to_name[agent_id] = agent_name
+            if agent_name:
+                agent_name_to_id[agent_name] = agent_id
+        
+        allowed_agent_ids = set()
+        for identifier in allowed_agent_identifiers:
+            if identifier in agent_id_to_name:
+                allowed_agent_ids.add(identifier)
+            elif identifier in agent_name_to_id:
+                allowed_agent_ids.add(agent_name_to_id[identifier])
+            for agent_name, agent_id in agent_name_to_id.items():
+                if agent_name.lower() == identifier.lower():
+                    allowed_agent_ids.add(agent_id)
+        
+        filtered_agents = []
+        for agent in agents:
+            agent_id = agent.get("agent_id") or agent.get("id") or ""
+            agent_name = agent.get("name") or ""
+            
+            if (agent_id in allowed_agent_ids or 
+                agent_id in allowed_agent_identifiers or
+                agent_name in allowed_agent_identifiers or
+                any(agent_name.lower() == ident.lower() for ident in allowed_agent_identifiers)):
+                filtered_agents.append({
+                    "agent_id": agent_id,
+                    "name": agent_name
+                })
+        
+        return filtered_agents
+    
+    # Return all agents if no receiver_number filter
+    return [
+        {
+            "agent_id": agent.get("agent_id") or agent.get("id") or "",
+            "name": agent.get("name") or ""
+        }
+        for agent in agents
+        if agent.get("agent_id") or agent.get("id")
+    ]
 
 
 if __name__ == "__main__":
