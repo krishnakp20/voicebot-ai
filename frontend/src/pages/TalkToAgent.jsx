@@ -26,9 +26,10 @@ const TalkToAgent = () => {
       if (!existingScript) {
         console.log('Loading ElevenLabs widget script...')
         const script = document.createElement('script')
-        script.src = 'https://unpkg.com/@elevenlabs/convai-widget-embed'
+        script.src = 'https://unpkg.com/@elevenlabs/convai-widget-embed@latest/dist/index.js'
         script.async = true
-        script.type = 'text/javascript'
+        script.type = 'module'
+        script.crossOrigin = 'anonymous'
         script.onload = () => {
           console.log('ElevenLabs widget script loaded successfully')
           scriptLoadedRef.current = true
@@ -48,7 +49,27 @@ const TalkToAgent = () => {
         }
         script.onerror = (err) => {
           console.error('Failed to load widget script:', err)
-          setError('Failed to load voice widget script. Please check your internet connection and refresh the page.')
+          // Try fallback - direct from ElevenLabs CDN
+          console.log('Trying fallback script URL...')
+          const fallbackScript = document.createElement('script')
+          fallbackScript.src = 'https://elevenlabs.io/convai-widget/index.js'
+          fallbackScript.async = true
+          fallbackScript.type = 'module'
+          fallbackScript.crossOrigin = 'anonymous'
+          fallbackScript.onload = () => {
+            console.log('Fallback widget script loaded')
+            scriptLoadedRef.current = true
+            setTimeout(() => {
+              setWidgetReady(true)
+              if (agentId) {
+                createWidget(agentId)
+              }
+            }, 1500)
+          }
+          fallbackScript.onerror = () => {
+            setError('Failed to load voice widget script. Please check your internet connection and refresh the page.')
+          }
+          document.body.appendChild(fallbackScript)
         }
         document.body.appendChild(script)
       } else {
@@ -72,13 +93,14 @@ const TalkToAgent = () => {
     }
   }, [agentId, widgetReady])
   
-  // Auto-redirect fallback if widget doesn't load after 15 seconds
+  // Auto-redirect fallback if widget doesn't load after 20 seconds
   useEffect(() => {
     if (agentId && !widgetLoaded && !error) {
       const redirectTimer = setTimeout(() => {
-        console.log('Widget taking too long, redirecting to ElevenLabs...')
-        window.location.href = getTalkToUrl(agentId)
-      }, 15000) // 15 seconds
+        console.log('Widget taking too long, showing redirect option...')
+        // Don't auto-redirect, just show error with redirect option
+        setError('Widget is taking too long to load. Please use the button below to open in ElevenLabs, or ensure callai.dialdesk.in is properly allowlisted.')
+      }, 20000) // 20 seconds
       
       return () => clearTimeout(redirectTimer)
     }
@@ -103,12 +125,32 @@ const TalkToAgent = () => {
           // Check if widget actually rendered after a delay
           setTimeout(() => {
             const widget = widgetContainerRef.current?.querySelector('elevenlabs-convai')
-            if (widget && widget.offsetHeight > 0) {
-              setWidgetLoaded(true)
-              console.log('Widget successfully rendered')
+            if (widget) {
+              console.log('Widget element found:', {
+                offsetHeight: widget.offsetHeight,
+                offsetWidth: widget.offsetWidth,
+                innerHTML: widget.innerHTML?.substring(0, 100),
+                shadowRoot: widget.shadowRoot ? 'exists' : 'none'
+              })
+              
+              // Check if widget has content (either direct content or shadow DOM)
+              if (widget.offsetHeight > 0 || widget.shadowRoot || widget.innerHTML.trim().length > 0) {
+                setWidgetLoaded(true)
+                console.log('Widget successfully rendered')
+              } else {
+                console.warn('Widget element created but not rendering - checking for shadow DOM...')
+                // Wait a bit more for shadow DOM to initialize
+                setTimeout(() => {
+                  if (widget.shadowRoot || widget.offsetHeight > 0) {
+                    setWidgetLoaded(true)
+                  } else {
+                    setError('Widget not rendering. Please ensure your domain (callai.dialdesk.in) is allowlisted in ElevenLabs agent settings.')
+                  }
+                }, 3000)
+              }
             } else {
-              console.warn('Widget element created but not rendering')
-              setError('Widget not rendering. Please ensure your domain (callai.dialdesk.in) is allowlisted in ElevenLabs agent settings.')
+              console.warn('Widget element not found in container')
+              setError('Widget element not found. Please refresh the page.')
             }
           }, 2000)
         } else {
@@ -334,6 +376,16 @@ const TalkToAgent = () => {
                   <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-500 mx-auto mb-4"></div>
                   <p className="text-gray-500">Initializing voice conversation...</p>
                   <p className="text-gray-400 text-sm mt-2">This may take a few moments</p>
+                  <p className="text-gray-400 text-xs mt-4">
+                    If this takes too long, the widget may not be loading properly.
+                    <br />
+                    Check browser console (F12) for errors.
+                  </p>
+                </div>
+              )}
+              {widgetLoaded && !error && (
+                <div className="absolute top-4 right-4 bg-green-50 border border-green-200 rounded-lg px-3 py-2 text-green-700 text-xs z-10">
+                  <p>✓ Voice conversation interface loaded</p>
                 </div>
               )}
             </div>
