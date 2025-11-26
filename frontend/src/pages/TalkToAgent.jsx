@@ -20,66 +20,69 @@ const TalkToAgent = () => {
     console.log('TalkToAgent mounted, agentId:', agentId)
     console.log('Current domain:', window.location.hostname)
     
-    // Load ElevenLabs widget script
-    if (!scriptLoadedRef.current) {
+    // Check if widget script is already loaded (from index.html)
+    const checkScriptLoaded = () => {
       const existingScript = document.querySelector('script[src*="convai-widget-embed"]')
-      if (!existingScript) {
-        console.log('Loading ElevenLabs widget script...')
-        const script = document.createElement('script')
-        script.src = 'https://unpkg.com/@elevenlabs/convai-widget-embed@latest/dist/index.js'
-        script.async = true
-        script.type = 'module'
-        script.crossOrigin = 'anonymous'
-        script.onload = () => {
-          console.log('ElevenLabs widget script loaded successfully')
+      if (existingScript) {
+        console.log('Widget script found in DOM')
+        // Check if custom element is registered
+        if (customElements.get('elevenlabs-convai')) {
+          console.log('Custom element already registered')
           scriptLoadedRef.current = true
-          // Wait a bit for custom element registration
-          setTimeout(() => {
-            console.log('Checking for custom element registration...')
+          setWidgetReady(true)
+          if (agentId) {
+            setTimeout(() => createWidget(agentId), 500)
+          }
+        } else {
+          // Wait for script to load and register custom element
+          console.log('Waiting for custom element registration...')
+          const checkInterval = setInterval(() => {
             if (customElements.get('elevenlabs-convai')) {
-              console.log('Custom element elevenlabs-convai is registered')
-            } else {
-              console.warn('Custom element elevenlabs-convai not found after script load')
-            }
-            setWidgetReady(true)
-            if (agentId) {
-              createWidget(agentId)
-            }
-          }, 1000) // Increased timeout
-        }
-        script.onerror = (err) => {
-          console.error('Failed to load widget script:', err)
-          // Try fallback - direct from ElevenLabs CDN
-          console.log('Trying fallback script URL...')
-          const fallbackScript = document.createElement('script')
-          fallbackScript.src = 'https://elevenlabs.io/convai-widget/index.js'
-          fallbackScript.async = true
-          fallbackScript.type = 'module'
-          fallbackScript.crossOrigin = 'anonymous'
-          fallbackScript.onload = () => {
-            console.log('Fallback widget script loaded')
-            scriptLoadedRef.current = true
-            setTimeout(() => {
+              console.log('Custom element registered')
+              clearInterval(checkInterval)
+              scriptLoadedRef.current = true
               setWidgetReady(true)
               if (agentId) {
                 createWidget(agentId)
               }
-            }, 1500)
-          }
-          fallbackScript.onerror = () => {
-            setError('Failed to load voice widget script. Please check your internet connection and refresh the page.')
-          }
-          document.body.appendChild(fallbackScript)
+            }
+          }, 500)
+          
+          // Timeout after 10 seconds
+          setTimeout(() => {
+            clearInterval(checkInterval)
+            if (!customElements.get('elevenlabs-convai')) {
+              console.error('Custom element not registered after 10 seconds')
+              setError('Widget script failed to load. Please refresh the page.')
+            }
+          }, 10000)
         }
-        document.body.appendChild(script)
       } else {
-        console.log('Widget script already exists')
-        scriptLoadedRef.current = true
-        setWidgetReady(true)
-        if (agentId) {
-          setTimeout(() => createWidget(agentId), 1000)
-        }
+        // Script not in DOM, wait for it (it's loaded from index.html)
+        console.log('Waiting for widget script to load from index.html...')
+        const checkScript = setInterval(() => {
+          const script = document.querySelector('script[src*="convai-widget-embed"]')
+          if (script) {
+            clearInterval(checkScript)
+            checkScriptLoaded()
+          }
+        }, 500)
+        
+        setTimeout(() => {
+          clearInterval(checkScript)
+          if (!document.querySelector('script[src*="convai-widget-embed"]')) {
+            setError('Widget script not found. Please ensure the script is loaded.')
+          }
+        }, 10000)
       }
+    }
+    
+    // Wait a bit for page to fully load
+    if (document.readyState === 'complete') {
+      checkScriptLoaded()
+    } else {
+      window.addEventListener('load', checkScriptLoaded)
+      return () => window.removeEventListener('load', checkScriptLoaded)
     }
   }, [])
 
@@ -154,17 +157,29 @@ const TalkToAgent = () => {
             }
           }, 2000)
         } else {
-          // Try innerHTML approach
-          widgetContainerRef.current.innerHTML = `<elevenlabs-convai agent-id="${agentIdValue}"></elevenlabs-convai>`
-          console.log('Widget created via innerHTML')
-          
-          // Check if it rendered
+          // Custom element not registered yet, wait and retry
+          console.warn('Custom element not registered, waiting...')
           setTimeout(() => {
-            const widget = widgetContainerRef.current?.querySelector('elevenlabs-convai')
-            if (widget && widget.offsetHeight > 0) {
-              setWidgetLoaded(true)
+            if (customElements.get('elevenlabs-convai')) {
+              createWidget(agentIdValue)
             } else {
-              setError('Widget not rendering. Please ensure your domain (callai.dialdesk.in) is allowlisted in ElevenLabs agent settings.')
+              // Try innerHTML approach as last resort
+              widgetContainerRef.current.innerHTML = `<elevenlabs-convai agent-id="${agentIdValue}"></elevenlabs-convai>`
+              console.log('Widget created via innerHTML (fallback)')
+              
+              // Check if it rendered
+              setTimeout(() => {
+                const widget = widgetContainerRef.current?.querySelector('elevenlabs-convai')
+                if (widget) {
+                  if (widget.offsetHeight > 0 || widget.shadowRoot || widget.innerHTML.trim().length > 0) {
+                    setWidgetLoaded(true)
+                  } else {
+                    setError('Widget not rendering. Please ensure your domain (callai.dialdesk.in) is allowlisted in ElevenLabs agent settings.')
+                  }
+                } else {
+                  setError('Widget element not found. Please refresh the page.')
+                }
+              }, 3000)
             }
           }, 2000)
         }
@@ -319,7 +334,8 @@ const TalkToAgent = () => {
           <div className="h-full w-full p-8">
             <div 
               ref={widgetContainerRef}
-              className="w-full h-full min-h-[600px] flex items-center justify-center bg-white rounded-lg shadow-sm"
+              className="w-full h-full min-h-[600px] flex items-center justify-center bg-white rounded-lg shadow-sm relative"
+              style={{ minHeight: '600px' }}
             >
               {!widgetReady && !error && (
                 <div className="text-center">
