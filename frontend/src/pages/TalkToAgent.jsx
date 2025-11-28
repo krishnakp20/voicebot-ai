@@ -270,71 +270,61 @@ const TalkToAgent = () => {
   return (
     <div className="flex flex-col h-screen bg-gray-50">
       {/* Header */}
-      <div className="bg-white border-b border-gray-200 px-4 py-3 shadow-sm z-10">
+      <div className="bg-white border-b border-gray-200 px-3 py-2 shadow-sm z-10">
         <div className="flex items-center justify-between max-w-7xl mx-auto">
-          <div className="flex items-center space-x-4">
+          <div className="flex items-center space-x-2">
             <button
               onClick={() => navigate('/dashboard')}
-              className="p-2 hover:bg-gray-100 rounded-lg transition-colors"
+              className="p-1.5 hover:bg-gray-100 rounded transition-colors"
             >
-              <ArrowLeftIcon className="h-5 w-5 text-gray-600" />
+              <ArrowLeftIcon className="h-4 w-4 text-gray-600" />
             </button>
-            <div>
-              <h1 className="text-xl font-semibold text-gray-900 flex items-center space-x-2">
-                <PhoneIcon className="h-6 w-6" />
-                <span>Talk to Agent</span>
-              </h1>
+            <div className="flex items-center space-x-2">
+              <PhoneIcon className="h-4 w-4 text-gray-600" />
+              <h1 className="text-base font-semibold text-gray-900">Talk to Agent</h1>
               {agent && (
-                <p className="text-sm text-gray-500">{agent.name}</p>
+                <span className="text-xs text-gray-500">• {agent.name}</span>
               )}
             </div>
           </div>
           
           {/* Agent Selector */}
-          <div className="flex items-center space-x-2">
-            <label className="text-sm text-gray-600">Agent:</label>
-            <select
-              value={agentId || ''}
-              onChange={handleAgentChange}
-              disabled={isConnected}
-              className="px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent disabled:bg-gray-100 disabled:cursor-not-allowed"
-            >
-              <option value="">Select an agent...</option>
-              {agents.map((a) => (
-                <option key={a.agent_id} value={a.agent_id}>
-                  {a.name || a.agent_id}
-                </option>
-              ))}
-            </select>
-          </div>
+          <select
+            value={agentId || ''}
+            onChange={handleAgentChange}
+            disabled={isConnected}
+            className="text-sm px-2.5 py-1.5 border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-blue-500 focus:border-transparent disabled:bg-gray-100 disabled:cursor-not-allowed"
+          >
+            <option value="">Select agent...</option>
+            {agents.map((a) => (
+              <option key={a.agent_id} value={a.agent_id}>
+                {a.name || a.agent_id}
+              </option>
+            ))}
+          </select>
         </div>
       </div>
 
       {/* Error Message */}
       {error && (
-        <div className="bg-red-50 border-l-4 border-red-400 p-4 mx-4 mt-4 rounded">
+        <div className="bg-red-50 border-l-4 border-red-400 p-2.5 mx-3 mt-2 rounded">
           <div className="flex items-start">
             <div className="flex-shrink-0">
-              <svg className="h-5 w-5 text-red-400" viewBox="0 0 20 20" fill="currentColor">
+              <svg className="h-4 w-4 text-red-400 mt-0.5" viewBox="0 0 20 20" fill="currentColor">
                 <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" />
               </svg>
             </div>
-            <div className="ml-3 flex-1">
-              <p className="text-sm text-red-700 whitespace-pre-line">{error}</p>
+            <div className="ml-2 flex-1">
+              <p className="text-xs text-red-700 whitespace-pre-line">{error}</p>
               {error.includes('Domain Authorization Required') && (
-                <div className="mt-3 bg-white rounded p-3 border border-red-200">
-                  <p className="text-xs font-semibold text-red-900 mb-2">Quick Fix Steps:</p>
-                  <ol className="text-xs text-red-800 list-decimal list-inside space-y-1">
-                    <li>Go to <a href="https://elevenlabs.io/app" target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline font-semibold">ElevenLabs Dashboard</a></li>
-                    <li>Select your agent: <code className="bg-red-100 px-1 py-0.5 rounded text-xs font-mono">{agentId}</code></li>
-                    <li>Click on the <strong>"Security"</strong> tab</li>
-                    <li>In <strong>"Allowed Domains"</strong>, add: <code className="bg-red-100 px-1 py-0.5 rounded text-xs font-mono">{window.location.hostname}</code></li>
-                    <li>Click <strong>"Save"</strong></li>
-                    <li>Wait a few seconds, then refresh this page</li>
+                <div className="mt-2 bg-white rounded p-2 border border-red-200">
+                  <p className="text-xs font-semibold text-red-900 mb-1.5">Quick Fix:</p>
+                  <ol className="text-xs text-red-800 list-decimal list-inside space-y-0.5">
+                    <li>Go to <a href="https://elevenlabs.io/app" target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline">ElevenLabs Dashboard</a></li>
+                    <li>Agent: <code className="bg-red-100 px-1 rounded text-xs">{agentId}</code> → Security → Allowed Domains</li>
+                    <li>Add: <code className="bg-red-100 px-1 rounded text-xs">{window.location.hostname}</code> (no http://)</li>
+                    <li>Save and refresh</li>
                   </ol>
-                  <p className="text-xs text-red-700 mt-2">
-                    <strong>Important:</strong> Add exactly <code className="bg-red-100 px-1 py-0.5 rounded">{window.location.hostname}</code> (without http:// or https://)
-                  </p>
                 </div>
               )}
             </div>
@@ -347,108 +337,94 @@ const TalkToAgent = () => {
         {!agentId ? (
           <div className="flex items-center justify-center h-full">
             <div className="text-center">
-              <PhoneIcon className="h-24 w-24 text-gray-400 mx-auto mb-4" />
-              <p className="text-gray-500 text-lg mb-2">No agent selected</p>
-              <p className="text-gray-400 text-sm">Please select an agent from the dropdown above to start a voice conversation</p>
+              <PhoneIcon className="h-16 w-16 text-gray-400 mx-auto mb-3" />
+              <p className="text-gray-500 text-base mb-1">No agent selected</p>
+              <p className="text-gray-400 text-xs">Select an agent from the dropdown above</p>
             </div>
           </div>
         ) : (
-          <div className="flex-1 flex flex-col items-center justify-center p-8">
+          <div className="flex-1 flex flex-col items-center p-4 overflow-y-auto">
             {/* Conversation Status */}
-            <div className="w-full max-w-2xl mb-6">
-              <div className="bg-white rounded-lg shadow-sm p-6">
-                <div className="flex items-center justify-between mb-4">
-                  <div>
-                    <h2 className="text-lg font-semibold text-gray-900">Voice Conversation</h2>
-                    {conversationId && (
-                      <p className="text-xs text-gray-500 mt-1">ID: {conversationId}</p>
-                    )}
-                  </div>
+            <div className="w-full max-w-xl mb-4 flex-shrink-0">
+              <div className="bg-white rounded-lg shadow-sm p-4">
+                <div className="flex items-center justify-between mb-3">
                   <div className="flex items-center space-x-2">
-                    <div className={`h-3 w-3 rounded-full ${isConnected ? 'bg-green-500 animate-pulse' : 'bg-gray-300'}`}></div>
-                    <span className="text-sm text-gray-600">
+                    <div className={`h-2 w-2 rounded-full ${isConnected ? 'bg-green-500 animate-pulse' : 'bg-gray-300'}`}></div>
+                    <span className="text-xs font-medium text-gray-700">
                       {isConnected ? 'Connected' : 'Disconnected'}
                     </span>
+                    {conversationId && (
+                      <span className="text-xs text-gray-400">• {conversationId.substring(0, 12)}...</span>
+                    )}
                   </div>
                 </div>
 
                 {/* Control Buttons */}
-                <div className="flex items-center justify-center space-x-4 mb-6">
+                <div className="flex items-center justify-center space-x-2 mb-3">
                   {!isConnected ? (
                     <button
                       onClick={startConversation}
-                      className="flex items-center space-x-2 px-6 py-3 bg-green-500 text-white rounded-lg hover:bg-green-600 font-medium transition-colors shadow-md"
+                      className="flex items-center space-x-1.5 px-4 py-2 bg-green-500 text-white rounded-lg hover:bg-green-600 text-sm font-medium transition-colors shadow-sm"
                     >
-                      <PhoneIconSolid className="h-5 w-5" />
+                      <PhoneIconSolid className="h-4 w-4" />
                       <span>Start Call</span>
                     </button>
                   ) : (
                     <>
                       <button
                         onClick={toggleMute}
-                        className={`flex items-center space-x-2 px-4 py-2 rounded-lg font-medium transition-colors ${
+                        className={`flex items-center space-x-1.5 px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${
                           micMuted
                             ? 'bg-red-500 text-white hover:bg-red-600'
                             : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
                         }`}
                       >
                         {micMuted ? (
-                          <MicrophoneIcon className="h-5 w-5" />
+                          <MicrophoneIcon className="h-4 w-4" />
                         ) : (
-                          <MicrophoneIconSolid className="h-5 w-5" />
+                          <MicrophoneIconSolid className="h-4 w-4" />
                         )}
                         <span>{micMuted ? 'Unmute' : 'Mute'}</span>
                       </button>
                       <button
                         onClick={endConversation}
-                        className="flex items-center space-x-2 px-6 py-3 bg-red-500 text-white rounded-lg hover:bg-red-600 font-medium transition-colors shadow-md"
+                        className="flex items-center space-x-1.5 px-4 py-2 bg-red-500 text-white rounded-lg hover:bg-red-600 text-sm font-medium transition-colors shadow-sm"
                       >
-                        <PhoneIconSolid className="h-5 w-5" />
+                        <PhoneIconSolid className="h-4 w-4" />
                         <span>End Call</span>
                       </button>
                     </>
                   )}
                 </div>
 
-                {/* Volume Control */}
+                {/* Volume Control & Speaking Indicator */}
                 {isConnected && (
-                  <div className="mb-4">
-                    <label className="flex items-center space-x-2 text-sm text-gray-600 mb-2">
+                  <div className="flex items-center justify-between mb-2">
+                    <div className="flex items-center space-x-2 flex-1">
                       {volume > 0 ? (
-                        <SpeakerWaveIcon className="h-5 w-5" />
+                        <SpeakerWaveIcon className="h-4 w-4 text-gray-500" />
                       ) : (
-                        <SpeakerXMarkIcon className="h-5 w-5" />
+                        <SpeakerXMarkIcon className="h-4 w-4 text-gray-500" />
                       )}
-                      <span>Volume: {Math.round(volume * 100)}%</span>
-                    </label>
-                    <input
-                      type="range"
-                      min="0"
-                      max="1"
-                      step="0.1"
-                      value={volume}
-                      onChange={handleVolumeChange}
-                      className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer"
-                    />
-                  </div>
-                )}
-
-                {/* Speaking Indicator */}
-                {isConnected && isSpeaking && (
-                  <div className="flex items-center justify-center space-x-2 text-blue-600 mb-4">
-                    <div className="animate-pulse">
-                      <SpeakerWaveIcon className="h-5 w-5" />
+                      <input
+                        type="range"
+                        min="0"
+                        max="1"
+                        step="0.1"
+                        value={volume}
+                        onChange={handleVolumeChange}
+                        className="flex-1 h-1.5 bg-gray-200 rounded-lg appearance-none cursor-pointer"
+                      />
+                      <span className="text-xs text-gray-600 w-10 text-right">{Math.round(volume * 100)}%</span>
                     </div>
-                    <span className="text-sm font-medium">Agent is speaking...</span>
-                  </div>
-                )}
-
-                {/* Connection Warning */}
-                {isConnected && (
-                  <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-3 mb-4">
-                    <p className="text-xs text-yellow-800">
-                      <strong>Note:</strong> If you experience connection issues, check that your firewall/network allows WebSocket connections to <code className="bg-yellow-100 px-1 rounded">livekit.rtc.elevenlabs.io</code>
-                    </p>
+                    {isSpeaking && (
+                      <div className="flex items-center space-x-1.5 text-blue-600 ml-3">
+                        <div className="animate-pulse">
+                          <SpeakerWaveIcon className="h-4 w-4" />
+                        </div>
+                        <span className="text-xs font-medium">Speaking...</span>
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
@@ -456,20 +432,20 @@ const TalkToAgent = () => {
 
             {/* Messages Display */}
             {messages.length > 0 && (
-              <div className="w-full max-w-2xl bg-white rounded-lg shadow-sm p-6">
-                <h3 className="text-lg font-semibold text-gray-900 mb-4">Conversation</h3>
-                <div className="space-y-3 max-h-64 overflow-y-auto">
+              <div className="w-full max-w-xl bg-white rounded-lg shadow-sm p-3 mb-4 flex-shrink-0">
+                <h3 className="text-xs font-semibold text-gray-700 mb-2 uppercase tracking-wide">Messages</h3>
+                <div className="space-y-2 max-h-48 overflow-y-auto">
                   {messages.map((msg) => (
                     <div
                       key={msg.id}
-                      className={`p-3 rounded-lg ${
+                      className={`p-2 rounded text-xs ${
                         msg.role === 'user'
                           ? 'bg-blue-50 text-blue-900 ml-auto text-right'
                           : 'bg-gray-50 text-gray-900'
                       }`}
                     >
-                      <p className="text-sm">{msg.content}</p>
-                      <p className="text-xs text-gray-500 mt-1">
+                      <p className="text-xs">{msg.content}</p>
+                      <p className="text-xs text-gray-400 mt-0.5">
                         {msg.timestamp.toLocaleTimeString()}
                       </p>
                     </div>
@@ -480,16 +456,10 @@ const TalkToAgent = () => {
 
             {/* Instructions */}
             {!isConnected && (
-              <div className="w-full max-w-2xl mt-6 bg-blue-50 border border-blue-200 rounded-lg p-4">
-                <h4 className="font-semibold text-blue-900 mb-2">How to use:</h4>
-                <ul className="text-sm text-blue-800 space-y-1 list-disc list-inside">
-                  <li>Click "Start Call" to begin the voice conversation</li>
-                  <li>Allow microphone access when prompted</li>
-                  <li>Speak naturally - the agent will respond</li>
-                  <li>Use the mute button to temporarily disable your microphone</li>
-                  <li>Adjust volume using the slider</li>
-                  <li>Click "End Call" when finished</li>
-                </ul>
+              <div className="w-full max-w-xl bg-blue-50 border border-blue-200 rounded-lg p-2.5 flex-shrink-0">
+                <p className="text-xs text-blue-800">
+                  <strong>Tip:</strong> Click "Start Call" and allow microphone access to begin
+                </p>
               </div>
             )}
           </div>

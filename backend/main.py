@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
+from sqlalchemy import or_
 import json
 import asyncio
 import base64
@@ -218,10 +219,78 @@ def get_conversations(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    # Filter conversations by user's receiver_number if mapped
+    # Filter conversations by user's receiver_number OR by allowed agents
     query = db.query(Conversation)
+    
+    # Get all agents from ElevenLabs to build agent mapping
+    agents = elevenlabs_client.get_agents()
+    agent_id_to_name = {}
+    agent_name_to_id = {}
+    if agents:
+        for agent in agents:
+            agent_id = agent.get("agent_id") or agent.get("id") or ""
+            agent_name = agent.get("name") or ""
+            if agent_id:
+                agent_id_to_name[agent_id] = agent_name
+            if agent_name:
+                agent_name_to_id[agent_name] = agent_id
+    
+    # Build filter conditions
+    filter_conditions = []
+    
+    # Condition 1: Match by receiver_number (if user has one mapped)
     if current_user.receiver_number:
-        query = query.filter(Conversation.receiver_number == current_user.receiver_number)
+        filter_conditions.append(Conversation.receiver_number == current_user.receiver_number)
+    
+    # Condition 2: Match by agent (if user has access to agents)
+    # Get allowed agents from conversations with receiver_number OR from all agents if no receiver_number
+    allowed_agent_identifiers = set()
+    
+    if current_user.receiver_number:
+        # Get agents from conversations with this receiver_number
+        conversations_with_receiver = (
+            db.query(Conversation)
+            .filter(Conversation.receiver_number == current_user.receiver_number)
+            .filter(Conversation.agent.isnot(None))
+            .all()
+        )
+        allowed_agent_identifiers = {conv.agent for conv in conversations_with_receiver if conv.agent}
+    else:
+        # If no receiver_number, get all agents from all conversations
+        all_conversations = (
+            db.query(Conversation)
+            .filter(Conversation.agent.isnot(None))
+            .all()
+        )
+        allowed_agent_identifiers = {conv.agent for conv in all_conversations if conv.agent}
+    
+    # Also include agents that match by ID or name
+    if allowed_agent_identifiers:
+        # Build list of agent IDs and names to match
+        agent_match_conditions = []
+        for identifier in allowed_agent_identifiers:
+            # Check if identifier is an agent ID
+            if identifier in agent_id_to_name:
+                agent_match_conditions.append(Conversation.agent == identifier)
+            # Check if identifier is an agent name
+            elif identifier in agent_name_to_id:
+                agent_match_conditions.append(Conversation.agent == identifier)
+            # Also check direct match
+            else:
+                agent_match_conditions.append(Conversation.agent == identifier)
+        
+        # Also check if any agent name matches (case-insensitive)
+        for agent_name, agent_id in agent_name_to_id.items():
+            if agent_name.lower() in [ident.lower() for ident in allowed_agent_identifiers]:
+                agent_match_conditions.append(Conversation.agent == agent_id)
+                agent_match_conditions.append(Conversation.agent == agent_name)
+        
+        if agent_match_conditions:
+            filter_conditions.append(or_(*agent_match_conditions))
+    
+    # Apply filters: show conversations that match receiver_number OR agent
+    if filter_conditions:
+        query = query.filter(or_(*filter_conditions))
     
     conversations = (
         query
@@ -231,15 +300,17 @@ def get_conversations(
         .all()
     )
     
-    # Get all agents to resolve agent IDs to names
-    agents = elevenlabs_client.get_agents()
+    # Use the agents we already fetched to build agent_map for resolving IDs to names
+    # agent_map is built from agent_id_to_name which we already created above
     agent_map = {}
+    for agent_id, agent_name in agent_id_to_name.items():
+        agent_map[agent_id] = agent_name
+    # Also fetch full details for any missing names
     if agents:
         for agent in agents:
             agent_id = agent.get("agent_id") or agent.get("id") or ""
             agent_name = agent.get("name") or ""
-            if agent_id:
-                # If name is missing from list, fetch full agent details
+            if agent_id and agent_id not in agent_map:
                 if not agent_name:
                     full_agent = elevenlabs_client.get_agent(agent_id)
                     if full_agent:
@@ -266,10 +337,54 @@ def get_conversations(
     
     if not conversations:
         sync_conversations(db)
-        # Re-query with receiver_number filter after sync
+        # Re-query with same filter conditions after sync
         query = db.query(Conversation)
+        
+        # Rebuild filter conditions (same as above)
+        filter_conditions = []
+        
         if current_user.receiver_number:
-            query = query.filter(Conversation.receiver_number == current_user.receiver_number)
+            filter_conditions.append(Conversation.receiver_number == current_user.receiver_number)
+        
+        # Rebuild allowed agents list after sync
+        allowed_agent_identifiers = set()
+        if current_user.receiver_number:
+            conversations_with_receiver = (
+                db.query(Conversation)
+                .filter(Conversation.receiver_number == current_user.receiver_number)
+                .filter(Conversation.agent.isnot(None))
+                .all()
+            )
+            allowed_agent_identifiers = {conv.agent for conv in conversations_with_receiver if conv.agent}
+        else:
+            all_conversations = (
+                db.query(Conversation)
+                .filter(Conversation.agent.isnot(None))
+                .all()
+            )
+            allowed_agent_identifiers = {conv.agent for conv in all_conversations if conv.agent}
+        
+        if allowed_agent_identifiers:
+            agent_match_conditions = []
+            for identifier in allowed_agent_identifiers:
+                if identifier in agent_id_to_name:
+                    agent_match_conditions.append(Conversation.agent == identifier)
+                elif identifier in agent_name_to_id:
+                    agent_match_conditions.append(Conversation.agent == identifier)
+                else:
+                    agent_match_conditions.append(Conversation.agent == identifier)
+            
+            for agent_name, agent_id in agent_name_to_id.items():
+                if agent_name.lower() in [ident.lower() for ident in allowed_agent_identifiers]:
+                    agent_match_conditions.append(Conversation.agent == agent_id)
+                    agent_match_conditions.append(Conversation.agent == agent_name)
+            
+            if agent_match_conditions:
+                filter_conditions.append(or_(*agent_match_conditions))
+        
+        if filter_conditions:
+            query = query.filter(or_(*filter_conditions))
+        
         conversations = (
             query
             .order_by(Conversation.created_at.desc())
