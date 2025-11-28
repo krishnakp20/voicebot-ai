@@ -126,7 +126,12 @@ app = FastAPI(title="VoiceBot AI Dashboard API")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://localhost:5173"],
+    allow_origins=[
+        "http://localhost:3000", 
+        "http://localhost:5173",
+        "http://callai.dialdesk.in",
+        "https://callai.dialdesk.in"
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -1460,6 +1465,46 @@ def get_chat_agents(
         for agent in agents
         if agent.get("agent_id") or agent.get("id")
     ]
+
+
+@app.get("/chat/signed-url")
+def get_signed_url(
+    agent_id: str,
+    connection_type: str = "webrtc",  # "webrtc" or "websocket"
+    current_user: User = Depends(get_current_user),
+):
+    """Get a signed URL or conversation token for authenticated agents"""
+    try:
+        if connection_type == "websocket":
+            # Get signed URL for WebSocket connection
+            response = requests.get(
+                f"{ELEVENLABS_BASE_URL}/convai/conversation/get-signed-url",
+                params={"agent_id": agent_id},
+                headers={
+                    "xi-api-key": ELEVENLABS_API_KEY,
+                },
+            )
+            response.raise_for_status()
+            data = response.json()
+            return {"signed_url": data.get("signed_url")}
+        else:
+            # Get conversation token for WebRTC connection
+            response = requests.post(
+                f"{ELEVENLABS_BASE_URL}/convai/conversation",
+                json={"agent_id": agent_id},
+                headers={
+                    "xi-api-key": ELEVENLABS_API_KEY,
+                    "Content-Type": "application/json",
+                },
+            )
+            response.raise_for_status()
+            data = response.json()
+            return {"conversation_token": data.get("conversation_token")}
+    except requests.exceptions.RequestException as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to get signed URL/token: {str(e)}"
+        )
 
 
 if __name__ == "__main__":

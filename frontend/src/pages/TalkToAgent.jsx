@@ -1,7 +1,9 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
+import { useConversation } from '@elevenlabs/react'
 import api from '../services/api'
-import { ArrowLeftIcon } from '@heroicons/react/24/outline'
+import { ArrowLeftIcon, MicrophoneIcon, PhoneIcon, SpeakerWaveIcon, SpeakerXMarkIcon } from '@heroicons/react/24/outline'
+import { MicrophoneIcon as MicrophoneIconSolid, PhoneIcon as PhoneIconSolid } from '@heroicons/react/24/solid'
 
 const TalkToAgent = () => {
   const { agentId } = useParams()
@@ -10,267 +12,73 @@ const TalkToAgent = () => {
   const [agents, setAgents] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
-  const [widgetReady, setWidgetReady] = useState(false)
-  const [widgetLoaded, setWidgetLoaded] = useState(false)
-  const [diagnostics, setDiagnostics] = useState([])
-  const widgetContainerRef = useRef(null)
-  const scriptLoadedRef = useRef(false)
-  const checkIntervalRef = useRef(null)
-  
-  const addDiagnostic = (message, type = 'info') => {
-    const timestamp = new Date().toLocaleTimeString()
-    setDiagnostics(prev => [...prev, { timestamp, message, type }])
-    console.log(`[${timestamp}] ${message}`)
-  }
+  const [messages, setMessages] = useState([])
+  const [micMuted, setMicMuted] = useState(false)
+  const [volume, setVolume] = useState(0.8)
+  const [conversationId, setConversationId] = useState(null)
 
-  useEffect(() => {
-    addDiagnostic('Component mounted', 'info')
-    addDiagnostic(`Current domain: ${window.location.hostname}`, 'info')
-    addDiagnostic(`Agent ID: ${agentId || 'none'}`, 'info')
-    
-    // Check if widget script is already loaded (from index.html)
-    const checkScriptLoaded = () => {
-      const existingScript = document.querySelector('script[src*="convai-widget-embed"]')
-      if (existingScript) {
-        addDiagnostic('Widget script found in DOM', 'success')
-        addDiagnostic(`Script src: ${existingScript.src}`, 'info')
-        
-        // Wait for script to fully load (especially if it's a module)
-        const scriptLoadCheck = () => {
-          // Check if custom element is registered
-          if (customElements.get('elevenlabs-convai')) {
-            addDiagnostic('Custom element registered', 'success')
-            scriptLoadedRef.current = true
-            setWidgetReady(true)
-            if (agentId) {
-              setTimeout(() => createWidget(agentId), 500)
-            }
-          } else {
-            // Wait for script to load and register custom element
-            addDiagnostic('Waiting for custom element registration...', 'info')
-            let attempts = 0
-            const maxAttempts = 20 // 10 seconds total
-            
-            const checkInterval = setInterval(() => {
-              attempts++
-              if (customElements.get('elevenlabs-convai')) {
-                addDiagnostic('Custom element registered', 'success')
-                clearInterval(checkInterval)
-                scriptLoadedRef.current = true
-                setWidgetReady(true)
-                if (agentId) {
-                  createWidget(agentId)
-                }
-              } else if (attempts >= maxAttempts) {
-                addDiagnostic('Custom element not registered after 10 seconds', 'error')
-                addDiagnostic('Available custom elements: ' + Array.from(customElements.entries?.() || []).join(', '), 'error')
-                clearInterval(checkInterval)
-                setError('Widget script loaded but custom element not registered. Check browser console for errors.')
-              }
-            }, 500)
-          }
-        }
-        
-        // If script is already loaded, check immediately
-        if (existingScript.complete || existingScript.readyState === 'complete') {
-          scriptLoadCheck()
-        } else {
-          // Wait for script to load
-          existingScript.addEventListener('load', scriptLoadCheck)
-          existingScript.addEventListener('error', () => {
-            addDiagnostic('Script failed to load', 'error')
-            setError('Failed to load widget script. Please check your internet connection.')
-          })
-        }
-      } else {
-        // Script not in DOM, wait for it (it's loaded from index.html)
-        addDiagnostic('Waiting for widget script to load from index.html...', 'info')
-        const checkScript = setInterval(() => {
-          const script = document.querySelector('script[src*="convai-widget-embed"]')
-          if (script) {
-            addDiagnostic('Script found, checking registration...', 'info')
-            clearInterval(checkScript)
-            checkScriptLoaded()
-          }
-        }, 500)
-        
-        setTimeout(() => {
-          clearInterval(checkScript)
-          if (!document.querySelector('script[src*="convai-widget-embed"]')) {
-            addDiagnostic('Widget script not found after 10 seconds', 'error')
-            setError('Widget script not found. Please ensure the script is loaded.')
-          }
-        }, 10000)
+  // Initialize the conversation hook
+  const conversation = useConversation({
+    micMuted,
+    volume,
+    onConnect: () => {
+      console.log('Conversation connected')
+      setError(null)
+    },
+    onDisconnect: () => {
+      console.log('Conversation disconnected')
+      // Don't show error on normal disconnect
+      if (conversation.status === 'disconnected' && conversationId) {
+        // Only show error if we were connected and got unexpectedly disconnected
+        // This will be handled by onError for actual errors
       }
+    },
+    onMessage: (message) => {
+      console.log('Message received:', message)
+      const messageContent = message.content || message.text || message.message || ''
+      const messageRole = message.role || (message.source === 'ai' ? 'agent' : 'user')
+      
+      if (messageContent) {
+        setMessages(prev => [...prev, {
+          id: Date.now() + Math.random(),
+          type: message.type || 'text',
+          content: messageContent,
+          role: messageRole,
+          timestamp: new Date()
+        }])
+      }
+    },
+    onError: (err) => {
+      console.error('Conversation error:', err)
+      // Filter out connection errors that are being handled by reconnection
+      const errorMessage = err?.message || err?.toString() || 'An error occurred during the conversation'
+      
+      // Don't show transient connection errors as they're being handled
+      if (!errorMessage.includes('websocket') && 
+          !errorMessage.includes('WebSocket') && 
+          !errorMessage.includes('reconnect') &&
+          !errorMessage.includes('ConnectionError')) {
+        setError(errorMessage)
+      }
+    },
+    onStatusChange: (status) => {
+      console.log('Status changed:', status)
+      // Clear error when successfully connected
+      if (status.status === 'connected') {
+        setError(null)
+      }
+    },
+    onModeChange: (mode) => {
+      console.log('Mode changed:', mode)
     }
-    
-    // Wait a bit for page to fully load
-    if (document.readyState === 'complete') {
-      checkScriptLoaded()
-    } else {
-      window.addEventListener('load', checkScriptLoaded)
-      return () => window.removeEventListener('load', checkScriptLoaded)
-    }
-  }, [])
+  })
 
   useEffect(() => {
     fetchAgents()
     if (agentId) {
       fetchAgentDetails(agentId)
-      if (widgetReady) {
-        createWidget(agentId)
-      }
     }
-  }, [agentId, widgetReady])
-  
-  // Auto-redirect fallback if widget doesn't load after 20 seconds
-  useEffect(() => {
-    if (agentId && !widgetLoaded && !error) {
-      const redirectTimer = setTimeout(() => {
-        console.log('Widget taking too long, showing redirect option...')
-        // Don't auto-redirect, just show error with redirect option
-        setError('Widget is taking too long to load. Please use the button below to open in ElevenLabs, or ensure callai.dialdesk.in is properly allowlisted.')
-      }, 20000) // 20 seconds
-      
-      return () => clearTimeout(redirectTimer)
-    }
-  }, [agentId, widgetLoaded, error])
-
-  const createWidget = (agentIdValue) => {
-    if (!widgetContainerRef.current) {
-      console.error('Widget container ref not available')
-      return
-    }
-    
-    console.log('Creating widget for agent:', agentIdValue)
-    console.log('Container element:', widgetContainerRef.current)
-    
-    // Clear existing widget
-    widgetContainerRef.current.innerHTML = ''
-    
-    // Wait for custom element to be registered
-    setTimeout(() => {
-      try {
-        const customElementDefined = customElements.get('elevenlabs-convai')
-        console.log('Custom element check:', {
-          defined: !!customElementDefined,
-          allCustomElements: Array.from(customElements.entries?.() || [])
-        })
-        
-        if (customElementDefined) {
-          addDiagnostic('Creating widget element...', 'info')
-          const widgetElement = document.createElement('elevenlabs-convai')
-          widgetElement.setAttribute('agent-id', agentIdValue)
-          
-          // Add event listeners to debug
-          widgetElement.addEventListener('error', (e) => {
-            addDiagnostic('Widget error event: ' + (e.message || 'Unknown'), 'error')
-            console.error('Widget error event:', e)
-            setError('Widget error: ' + (e.message || 'Unknown error'))
-          })
-          
-          // Listen for any console errors from the widget
-          const originalError = console.error
-          console.error = (...args) => {
-            if (args.some(arg => typeof arg === 'string' && (arg.includes('elevenlabs') || arg.includes('convai') || arg.includes('agent')))) {
-              addDiagnostic('Console error: ' + args.join(' '), 'error')
-            }
-            originalError.apply(console, args)
-          }
-          
-          widgetContainerRef.current.appendChild(widgetElement)
-          console.log('Widget element appended to DOM:', {
-            element: widgetElement,
-            parent: widgetContainerRef.current,
-            agentId: agentIdValue
-          })
-          setError(null)
-          
-          // Check widget rendering with multiple attempts
-          let checkCount = 0
-          const maxChecks = 10
-          const checkWidget = () => {
-            checkCount++
-            const widget = widgetContainerRef.current?.querySelector('elevenlabs-convai')
-            console.log(`Widget check #${checkCount}:`, {
-              found: !!widget,
-              offsetHeight: widget?.offsetHeight,
-              offsetWidth: widget?.offsetWidth,
-              innerHTML: widget?.innerHTML?.substring(0, 50),
-              shadowRoot: widget?.shadowRoot ? 'exists' : 'none',
-              computedStyle: widget ? window.getComputedStyle(widget).display : 'N/A'
-            })
-            
-            if (widget) {
-              const hasContent = widget.offsetHeight > 0 || 
-                                widget.shadowRoot || 
-                                widget.innerHTML.trim().length > 0 ||
-                                window.getComputedStyle(widget).display !== 'none'
-              
-              if (hasContent) {
-                setWidgetLoaded(true)
-                console.log('✓ Widget successfully rendered!')
-                return
-              }
-            }
-            
-            if (checkCount < maxChecks) {
-              setTimeout(checkWidget, 1000)
-            } else {
-              console.error('Widget failed to render after', maxChecks, 'checks')
-              // Check for specific error messages in console
-              setError('Widget not rendering after multiple attempts. Please check: 1) Domain is allowlisted (callai.dialdesk.in), 2) Browser console for errors, 3) Network tab for failed requests.')
-            }
-          }
-          
-          // Start checking after initial delay
-          setTimeout(checkWidget, 1000)
-        } else {
-          // Custom element not registered
-          console.error('Custom element elevenlabs-convai is not registered!')
-          console.log('Available custom elements:', Array.from(customElements.entries?.() || []))
-          console.log('Scripts in DOM:', Array.from(document.querySelectorAll('script')).map(s => s.src))
-          
-          // Try innerHTML approach as fallback
-          console.log('Attempting fallback: innerHTML approach')
-          widgetContainerRef.current.innerHTML = `<elevenlabs-convai agent-id="${agentIdValue}"></elevenlabs-convai>`
-          
-          setTimeout(() => {
-            const widget = widgetContainerRef.current?.querySelector('elevenlabs-convai')
-            if (widget) {
-              console.log('Fallback widget element found')
-              if (widget.offsetHeight > 0 || widget.shadowRoot || widget.innerHTML.trim().length > 0) {
-                setWidgetLoaded(true)
-              } else {
-                setError('Widget script may not be loaded. Please refresh the page and check browser console.')
-              }
-            } else {
-              setError('Failed to create widget element. Please refresh the page.')
-            }
-          }, 3000)
-        }
-      } catch (err) {
-        console.error('Error creating widget:', err)
-        console.error('Error stack:', err.stack)
-        setError('Widget failed to load: ' + err.message)
-      }
-    }, 500)
-  }
-  
-  // Monitor network errors
-  useEffect(() => {
-    const handleError = (event) => {
-      if (event.target && event.target.tagName === 'SCRIPT') {
-        console.error('Script load error:', event.target.src)
-        if (event.target.src.includes('elevenlabs') || event.target.src.includes('convai')) {
-          setError('Failed to load widget script. Please check your internet connection.')
-        }
-      }
-    }
-    
-    window.addEventListener('error', handleError, true)
-    return () => window.removeEventListener('error', handleError, true)
-  }, [])
+  }, [agentId])
 
   const fetchAgents = async () => {
     try {
@@ -298,12 +106,151 @@ const TalkToAgent = () => {
   const handleAgentChange = (e) => {
     const selectedAgentId = e.target.value
     if (selectedAgentId) {
+      // End current conversation if active
+      if (conversation.status === 'connected') {
+        conversation.endSession()
+      }
       navigate(`/talk-to/${selectedAgentId}`)
     }
   }
 
-  const getTalkToUrl = (agentId) => {
-    return `https://elevenlabs.io/app/talk-to?agent_id=${agentId}`
+  const startConversation = async () => {
+    if (!agentId) {
+      setError('Please select an agent first')
+      return
+    }
+
+    try {
+      setError(null)
+      setMessages([])
+
+      // Request microphone permission first
+      try {
+        await navigator.mediaDevices.getUserMedia({ audio: true })
+      } catch (micError) {
+        setError('Microphone access is required for voice conversations. Please allow microphone access and try again.')
+        return
+      }
+
+      // Try WebSocket first as it's more stable than WebRTC for some network configurations
+      // If that fails, try WebRTC
+      let connectionEstablished = false
+      
+      // First, try with agentId using WebSocket (more stable)
+      try {
+        console.log('Attempting WebSocket connection...')
+        const id = await conversation.startSession({
+          agentId: agentId,
+          connectionType: 'websocket',
+        })
+        setConversationId(id)
+        console.log('Conversation started with WebSocket, ID:', id)
+        connectionEstablished = true
+      } catch (wsError) {
+        console.log('WebSocket connection failed, trying WebRTC...', wsError)
+        
+        // Check for domain authorization error
+        const errorMessage = wsError?.message || wsError?.reason || wsError?.toString() || ''
+        if (errorMessage.includes('Access denied') || 
+            errorMessage.includes('not authorized') || 
+            errorMessage.includes('domain') ||
+            (wsError?.code === 3000 && errorMessage.includes('authorized'))) {
+          throw new Error(
+            `Domain Authorization Required: Your domain (${window.location.hostname}) is not authorized to connect to this agent. ` +
+            `Please add "${window.location.hostname}" to the agent's allowed domains in ElevenLabs Dashboard. ` +
+            `Go to: ElevenLabs Dashboard → Select Agent → Security → Allowed Domains → Add "${window.location.hostname}"`
+          )
+        }
+        
+        // Try WebRTC as fallback
+        try {
+          const id = await conversation.startSession({
+            agentId: agentId,
+            connectionType: 'webrtc',
+          })
+          setConversationId(id)
+          console.log('Conversation started with WebRTC, ID:', id)
+          connectionEstablished = true
+        } catch (webrtcError) {
+          console.log('WebRTC also failed, checking for authorization error...', webrtcError)
+          
+          // Check for domain authorization error in WebRTC too
+          const webrtcErrorMessage = webrtcError?.message || webrtcError?.reason || webrtcError?.toString() || ''
+          if (webrtcErrorMessage.includes('Access denied') || 
+              webrtcErrorMessage.includes('not authorized') || 
+              webrtcErrorMessage.includes('domain') ||
+              (webrtcError?.code === 3000 && webrtcErrorMessage.includes('authorized'))) {
+            throw new Error(
+              `Domain Authorization Required: Your domain (${window.location.hostname}) is not authorized to connect to this agent. ` +
+              `Please add "${window.location.hostname}" to the agent's allowed domains in ElevenLabs Dashboard. ` +
+              `Go to: ElevenLabs Dashboard → Select Agent → Security → Allowed Domains → Add "${window.location.hostname}"`
+            )
+          }
+          
+          console.log('Trying with signed URL...')
+          // If both fail, try with signed URL (for authenticated agents)
+          try {
+            const response = await api.get('/chat/signed-url', {
+              params: {
+                agent_id: agentId,
+                connection_type: 'websocket'
+              }
+            })
+            
+            if (response.data.signed_url) {
+              const id = await conversation.startSession({
+                signedUrl: response.data.signed_url,
+                connectionType: 'websocket',
+              })
+              setConversationId(id)
+              console.log('Conversation started with signed URL (WebSocket), ID:', id)
+              connectionEstablished = true
+            } else if (response.data.conversation_token) {
+              const id = await conversation.startSession({
+                conversationToken: response.data.conversation_token,
+                connectionType: 'webrtc',
+              })
+              setConversationId(id)
+              console.log('Conversation started with token (WebRTC), ID:', id)
+              connectionEstablished = true
+            } else {
+              throw new Error('No signed URL or token received from server')
+            }
+          } catch (signedUrlError) {
+            console.error('Error getting signed URL:', signedUrlError)
+            throw new Error('Failed to start conversation. Please check your network connection and try again.')
+          }
+        }
+      }
+      
+      if (!connectionEstablished) {
+        throw new Error('Failed to establish connection with all methods')
+      }
+    } catch (err) {
+      console.error('Error starting conversation:', err)
+      setError(err.message || 'Failed to start conversation. Please try again.')
+    }
+  }
+
+  const endConversation = async () => {
+    try {
+      await conversation.endSession()
+      setConversationId(null)
+      setMessages([])
+    } catch (err) {
+      console.error('Error ending conversation:', err)
+      setError(err.message || 'Failed to end conversation')
+    }
+  }
+
+  const toggleMute = () => {
+    setMicMuted(!micMuted)
+  }
+
+  const handleVolumeChange = (e) => {
+    const newVolume = parseFloat(e.target.value)
+    setVolume(newVolume)
+    conversation.setVolume({ volume: newVolume })
   }
 
   if (loading && agentId) {
@@ -316,6 +263,9 @@ const TalkToAgent = () => {
       </div>
     )
   }
+
+  const isConnected = conversation.status === 'connected'
+  const isSpeaking = conversation.isSpeaking
 
   return (
     <div className="flex flex-col h-screen bg-gray-50">
@@ -331,9 +281,7 @@ const TalkToAgent = () => {
             </button>
             <div>
               <h1 className="text-xl font-semibold text-gray-900 flex items-center space-x-2">
-                <svg className="h-6 w-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 5a2 2 0 012-2h3.28a1 1 0 01.948.684l1.498 4.493a1 1 0 01-.502 1.21l-2.257 1.13a11.042 11.042 0 005.516 5.516l1.13-2.257a1 1 0 011.21-.502l4.493 1.498a1 1 0 01.684.949V19a2 2 0 01-2 2h-1C9.716 21 3 14.284 3 6V5z" />
-                </svg>
+                <PhoneIcon className="h-6 w-6" />
                 <span>Talk to Agent</span>
               </h1>
               {agent && (
@@ -348,7 +296,8 @@ const TalkToAgent = () => {
             <select
               value={agentId || ''}
               onChange={handleAgentChange}
-              className="px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+              disabled={isConnected}
+              className="px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent disabled:bg-gray-100 disabled:cursor-not-allowed"
             >
               <option value="">Select an agent...</option>
               {agents.map((a) => (
@@ -364,123 +313,185 @@ const TalkToAgent = () => {
       {/* Error Message */}
       {error && (
         <div className="bg-red-50 border-l-4 border-red-400 p-4 mx-4 mt-4 rounded">
-          <p className="text-sm text-red-700">{error}</p>
-        </div>
-      )}
-
-      {/* Diagnostics Panel - Always visible when there are diagnostics */}
-      {diagnostics.length > 0 && (
-        <div className="bg-gray-900 text-green-400 p-4 mx-4 mt-2 rounded font-mono text-xs max-h-40 overflow-y-auto border border-gray-700">
-          <div className="font-bold mb-2 text-white">Debug Logs (Check Console for Details):</div>
-          {diagnostics.slice(-8).map((diag, idx) => (
-            <div key={idx} className={diag.type === 'error' ? 'text-red-400' : diag.type === 'success' ? 'text-green-400' : 'text-gray-400'}>
-              [{diag.timestamp}] {diag.message}
+          <div className="flex items-start">
+            <div className="flex-shrink-0">
+              <svg className="h-5 w-5 text-red-400" viewBox="0 0 20 20" fill="currentColor">
+                <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" />
+              </svg>
             </div>
-          ))}
-          <button
-            onClick={() => {
-              console.log('=== Full Diagnostics ===')
-              console.log('Domain:', window.location.hostname)
-              console.log('Agent ID:', agentId)
-              console.log('Script loaded:', !!document.querySelector('script[src*="convai-widget-embed"]'))
-              console.log('Custom element registered:', !!customElements.get('elevenlabs-convai'))
-              console.log('Widget element:', widgetContainerRef.current?.querySelector('elevenlabs-convai'))
-              console.log('All scripts:', Array.from(document.querySelectorAll('script')).map(s => s.src))
-            }}
-            className="mt-2 px-3 py-1 bg-blue-600 text-white rounded text-xs hover:bg-blue-700"
-          >
-            Log Full Details to Console
-          </button>
+            <div className="ml-3 flex-1">
+              <p className="text-sm text-red-700 whitespace-pre-line">{error}</p>
+              {error.includes('Domain Authorization Required') && (
+                <div className="mt-3 bg-white rounded p-3 border border-red-200">
+                  <p className="text-xs font-semibold text-red-900 mb-2">Quick Fix Steps:</p>
+                  <ol className="text-xs text-red-800 list-decimal list-inside space-y-1">
+                    <li>Go to <a href="https://elevenlabs.io/app" target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline font-semibold">ElevenLabs Dashboard</a></li>
+                    <li>Select your agent: <code className="bg-red-100 px-1 py-0.5 rounded text-xs font-mono">{agentId}</code></li>
+                    <li>Click on the <strong>"Security"</strong> tab</li>
+                    <li>In <strong>"Allowed Domains"</strong>, add: <code className="bg-red-100 px-1 py-0.5 rounded text-xs font-mono">{window.location.hostname}</code></li>
+                    <li>Click <strong>"Save"</strong></li>
+                    <li>Wait a few seconds, then refresh this page</li>
+                  </ol>
+                  <p className="text-xs text-red-700 mt-2">
+                    <strong>Important:</strong> Add exactly <code className="bg-red-100 px-1 py-0.5 rounded">{window.location.hostname}</code> (without http:// or https://)
+                  </p>
+                </div>
+              )}
+            </div>
+          </div>
         </div>
       )}
 
       {/* Main Content */}
-      <div className="flex-1 overflow-hidden relative">
+      <div className="flex-1 overflow-hidden flex flex-col">
         {!agentId ? (
           <div className="flex items-center justify-center h-full">
             <div className="text-center">
-              <svg className="h-24 w-24 text-gray-400 mx-auto mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 5a2 2 0 012-2h3.28a1 1 0 01.948.684l1.498 4.493a1 1 0 01-.502 1.21l-2.257 1.13a11.042 11.042 0 005.516 5.516l1.13-2.257a1 1 0 011.21-.502l4.493 1.498a1 1 0 01.684.949V19a2 2 0 01-2 2h-1C9.716 21 3 14.284 3 6V5z" />
-              </svg>
+              <PhoneIcon className="h-24 w-24 text-gray-400 mx-auto mb-4" />
               <p className="text-gray-500 text-lg mb-2">No agent selected</p>
               <p className="text-gray-400 text-sm">Please select an agent from the dropdown above to start a voice conversation</p>
             </div>
           </div>
         ) : (
-          <div className="h-full w-full p-8">
-            <div 
-              ref={widgetContainerRef}
-              className="w-full h-full min-h-[600px] flex items-center justify-center bg-white rounded-lg shadow-sm relative"
-              style={{ minHeight: '600px' }}
-            >
-              {!widgetReady && !error && (
-                <div className="text-center">
-                  <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-500 mx-auto mb-4"></div>
-                  <p className="text-gray-500">Loading voice conversation interface...</p>
-                  <p className="text-gray-400 text-sm mt-2">Please wait...</p>
-                </div>
-              )}
-              {error && (
-                <div className="text-center max-w-2xl mx-auto">
-                  <div className="bg-red-50 border border-red-200 rounded-lg p-6 mb-4">
-                    <p className="text-red-600 mb-4 font-semibold">{error}</p>
-                    <div className="text-left text-sm text-gray-600 bg-white p-4 rounded mb-4">
-                      <p className="font-semibold mb-3 text-base">To fix this, add your domain to ElevenLabs allowlist:</p>
-                      <ol className="list-decimal list-inside space-y-2">
-                        <li>Go to <a href="https://elevenlabs.io/app" target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline font-semibold">ElevenLabs Dashboard</a></li>
-                        <li>Select agent: <code className="bg-gray-100 px-2 py-1 rounded text-xs font-mono">{agentId}</code></li>
-                        <li>Go to <strong>"Security"</strong> tab</li>
-                        <li>In the <strong>"Allowed Domains"</strong> section, add:</li>
-                        <li className="ml-4 mt-2">
-                          <code className="bg-blue-50 border border-blue-200 px-3 py-2 rounded block text-sm font-mono text-blue-800">
-                            callai.dialdesk.in
-                          </code>
-                          <p className="text-xs text-gray-600 mt-2">
-                            <strong>Important:</strong> Add exactly <code className="bg-gray-100 px-1 rounded">callai.dialdesk.in</code> (without http:// or https://)
-                          </p>
-                        </li>
-                        <li>Click <strong>"Save"</strong></li>
-                        <li>Wait a few seconds, then refresh this page</li>
-                      </ol>
-                    </div>
-                    <div className="flex gap-3 justify-center">
-                      <button
-                        onClick={() => window.location.reload()}
-                        className="px-6 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 font-medium"
-                      >
-                        Refresh Page
-                      </button>
-                      <button
-                        onClick={() => {
-                          // Open in same window - seamless redirect
-                          window.location.href = getTalkToUrl(agentId)
-                        }}
-                        className="px-6 py-2 bg-purple-500 text-white rounded-lg hover:bg-purple-600 font-medium"
-                      >
-                        Open in ElevenLabs
-                      </button>
-                    </div>
+          <div className="flex-1 flex flex-col items-center justify-center p-8">
+            {/* Conversation Status */}
+            <div className="w-full max-w-2xl mb-6">
+              <div className="bg-white rounded-lg shadow-sm p-6">
+                <div className="flex items-center justify-between mb-4">
+                  <div>
+                    <h2 className="text-lg font-semibold text-gray-900">Voice Conversation</h2>
+                    {conversationId && (
+                      <p className="text-xs text-gray-500 mt-1">ID: {conversationId}</p>
+                    )}
+                  </div>
+                  <div className="flex items-center space-x-2">
+                    <div className={`h-3 w-3 rounded-full ${isConnected ? 'bg-green-500 animate-pulse' : 'bg-gray-300'}`}></div>
+                    <span className="text-sm text-gray-600">
+                      {isConnected ? 'Connected' : 'Disconnected'}
+                    </span>
                   </div>
                 </div>
-              )}
-              {!error && !widgetLoaded && widgetReady && (
-                <div className="text-center">
-                  <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-500 mx-auto mb-4"></div>
-                  <p className="text-gray-500">Initializing voice conversation...</p>
-                  <p className="text-gray-400 text-sm mt-2">This may take a few moments</p>
-                  <p className="text-gray-400 text-xs mt-4">
-                    If this takes too long, the widget may not be loading properly.
-                    <br />
-                    Check browser console (F12) for errors.
-                  </p>
+
+                {/* Control Buttons */}
+                <div className="flex items-center justify-center space-x-4 mb-6">
+                  {!isConnected ? (
+                    <button
+                      onClick={startConversation}
+                      className="flex items-center space-x-2 px-6 py-3 bg-green-500 text-white rounded-lg hover:bg-green-600 font-medium transition-colors shadow-md"
+                    >
+                      <PhoneIconSolid className="h-5 w-5" />
+                      <span>Start Call</span>
+                    </button>
+                  ) : (
+                    <>
+                      <button
+                        onClick={toggleMute}
+                        className={`flex items-center space-x-2 px-4 py-2 rounded-lg font-medium transition-colors ${
+                          micMuted
+                            ? 'bg-red-500 text-white hover:bg-red-600'
+                            : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
+                        }`}
+                      >
+                        {micMuted ? (
+                          <MicrophoneIcon className="h-5 w-5" />
+                        ) : (
+                          <MicrophoneIconSolid className="h-5 w-5" />
+                        )}
+                        <span>{micMuted ? 'Unmute' : 'Mute'}</span>
+                      </button>
+                      <button
+                        onClick={endConversation}
+                        className="flex items-center space-x-2 px-6 py-3 bg-red-500 text-white rounded-lg hover:bg-red-600 font-medium transition-colors shadow-md"
+                      >
+                        <PhoneIconSolid className="h-5 w-5" />
+                        <span>End Call</span>
+                      </button>
+                    </>
+                  )}
                 </div>
-              )}
-              {widgetLoaded && !error && (
-                <div className="absolute top-4 right-4 bg-green-50 border border-green-200 rounded-lg px-3 py-2 text-green-700 text-xs z-10">
-                  <p>✓ Voice conversation interface loaded</p>
-                </div>
-              )}
+
+                {/* Volume Control */}
+                {isConnected && (
+                  <div className="mb-4">
+                    <label className="flex items-center space-x-2 text-sm text-gray-600 mb-2">
+                      {volume > 0 ? (
+                        <SpeakerWaveIcon className="h-5 w-5" />
+                      ) : (
+                        <SpeakerXMarkIcon className="h-5 w-5" />
+                      )}
+                      <span>Volume: {Math.round(volume * 100)}%</span>
+                    </label>
+                    <input
+                      type="range"
+                      min="0"
+                      max="1"
+                      step="0.1"
+                      value={volume}
+                      onChange={handleVolumeChange}
+                      className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer"
+                    />
+                  </div>
+                )}
+
+                {/* Speaking Indicator */}
+                {isConnected && isSpeaking && (
+                  <div className="flex items-center justify-center space-x-2 text-blue-600 mb-4">
+                    <div className="animate-pulse">
+                      <SpeakerWaveIcon className="h-5 w-5" />
+                    </div>
+                    <span className="text-sm font-medium">Agent is speaking...</span>
+                  </div>
+                )}
+
+                {/* Connection Warning */}
+                {isConnected && (
+                  <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-3 mb-4">
+                    <p className="text-xs text-yellow-800">
+                      <strong>Note:</strong> If you experience connection issues, check that your firewall/network allows WebSocket connections to <code className="bg-yellow-100 px-1 rounded">livekit.rtc.elevenlabs.io</code>
+                    </p>
+                  </div>
+                )}
+              </div>
             </div>
+
+            {/* Messages Display */}
+            {messages.length > 0 && (
+              <div className="w-full max-w-2xl bg-white rounded-lg shadow-sm p-6">
+                <h3 className="text-lg font-semibold text-gray-900 mb-4">Conversation</h3>
+                <div className="space-y-3 max-h-64 overflow-y-auto">
+                  {messages.map((msg) => (
+                    <div
+                      key={msg.id}
+                      className={`p-3 rounded-lg ${
+                        msg.role === 'user'
+                          ? 'bg-blue-50 text-blue-900 ml-auto text-right'
+                          : 'bg-gray-50 text-gray-900'
+                      }`}
+                    >
+                      <p className="text-sm">{msg.content}</p>
+                      <p className="text-xs text-gray-500 mt-1">
+                        {msg.timestamp.toLocaleTimeString()}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Instructions */}
+            {!isConnected && (
+              <div className="w-full max-w-2xl mt-6 bg-blue-50 border border-blue-200 rounded-lg p-4">
+                <h4 className="font-semibold text-blue-900 mb-2">How to use:</h4>
+                <ul className="text-sm text-blue-800 space-y-1 list-disc list-inside">
+                  <li>Click "Start Call" to begin the voice conversation</li>
+                  <li>Allow microphone access when prompted</li>
+                  <li>Speak naturally - the agent will respond</li>
+                  <li>Use the mute button to temporarily disable your microphone</li>
+                  <li>Adjust volume using the slider</li>
+                  <li>Click "End Call" when finished</li>
+                </ul>
+              </div>
+            )}
           </div>
         )}
       </div>
