@@ -6,8 +6,10 @@ import {
   ClockIcon,
   ChartBarIcon,
   ArrowTrendingUpIcon,
-  ArrowTrendingDownIcon
+  ArrowTrendingDownIcon,
+  PhoneIcon
 } from '@heroicons/react/24/outline'
+import OutboundCallModal from '../components/OutboundCallModal'
 
 const Dashboard = () => {
   const [metrics, setMetrics] = useState({
@@ -27,6 +29,7 @@ const Dashboard = () => {
   const [volumeData, setVolumeData] = useState([])
   const [volumeLoading, setVolumeLoading] = useState(true)
   const [volumeError, setVolumeError] = useState(null)
+  const [showOutboundModal, setShowOutboundModal] = useState(false)
 
   useEffect(() => {
     fetchMetrics()
@@ -157,9 +160,18 @@ const Dashboard = () => {
           <h1 className="text-xl font-semibold text-gray-800">Dashboard</h1>
           <p className="text-xs text-gray-500 mt-0.5">Voice AI performance summary</p>
         </div>
-        <div className="text-right">
-          <p className="text-[11px] text-gray-500 uppercase tracking-wide">Total Conversations</p>
-          <p className="text-base font-semibold text-gray-800">{metrics.total_conversations || 0}</p>
+        <div className="flex items-center gap-4">
+          <button
+            onClick={() => setShowOutboundModal(true)}
+            className="flex items-center space-x-2 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors shadow-sm"
+          >
+            <PhoneIcon className="h-5 w-5" />
+            <span className="font-medium">OB Call</span>
+          </button>
+          <div className="text-right">
+            <p className="text-[11px] text-gray-500 uppercase tracking-wide">Total Conversations</p>
+            <p className="text-base font-semibold text-gray-800">{metrics.total_conversations || 0}</p>
+          </div>
         </div>
       </div>
 
@@ -395,6 +407,14 @@ const Dashboard = () => {
           </div>
         </div>
       </div>
+
+      {/* Outbound Call Modal */}
+      {showOutboundModal && (
+        <OutboundCallModal
+          isOpen={showOutboundModal}
+          onClose={() => setShowOutboundModal(false)}
+        />
+      )}
     </div>
   )
 }

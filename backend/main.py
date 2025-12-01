@@ -12,6 +12,10 @@ import json
 import asyncio
 import base64
 import io
+import random
+import os
+import paramiko
+import urllib.parse
 
 from database import SessionLocal, engine, Base
 from models import User, Conversation, Transcript, PromptTemplate
@@ -28,6 +32,10 @@ from schemas import (
     PromptTemplateCreate,
     PromptTemplateUpdate,
     PromptTemplateResponse,
+    SendOtpRequest,
+    SendOtpResponse,
+    VerifyOtpRequest,
+    VerifyOtpResponse,
 )
 from auth import verify_password, create_access_token, verify_token
 from elevenlabs_client import (
@@ -140,6 +148,10 @@ app.add_middleware(
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/login")
 elevenlabs_client = ElevenLabsClient()
+
+# In-memory OTP storage (in production, use Redis or similar)
+# Format: {phone_number: {"otp": "123456", "expires_at": datetime}}
+otp_storage: Dict[str, Dict] = {}
 
 
 def get_db():
@@ -1620,6 +1632,247 @@ def get_signed_url(
             status_code=500,
             detail=f"Failed to get signed URL/token: {str(e)}"
         )
+
+
+@app.post("/send-otp", response_model=SendOtpResponse)
+def send_otp(
+    request: SendOtpRequest,
+    current_user: User = Depends(get_current_user),
+):
+    """Send OTP to the provided mobile number"""
+    try:
+        # Validate number
+        number = request.number.strip()
+        if not number or len(number) < 10:
+            raise HTTPException(status_code=400, detail="Invalid mobile number. Must be at least 10 digits.")
+        
+        # Generate random 6-digit OTP
+        otp = str(random.randint(100000, 999999))
+        
+        # Store OTP with expiration (10 minutes to match SMS message)
+        expires_at = datetime.now() + timedelta(minutes=10)
+        otp_storage[number] = {
+            "otp": otp,
+            "expires_at": expires_at
+        }
+        
+        # Get SMS API configuration from environment variables
+        sms_username = os.getenv("SMS_API_USERNAME", "masCallnet1.trans")
+        sms_password = os.getenv("SMS_API_PASSWORD", "1t3BK")
+        sms_from = os.getenv("SMS_API_FROM", "Ispark")
+        sms_dlt_content_id = os.getenv("SMS_DLT_CONTENT_ID", "1707176439618550283")
+        sms_dlt_principal_entity_id = os.getenv("SMS_DLT_PRINCIPAL_ENTITY_ID", "1001485540000016211")
+        sms_api_url = os.getenv("SMS_API_URL", "https://api.smartping.ai/fe/api/v1/send")
+        
+        # Construct SMS message with OTP
+        sms_message = f"Your DialDesk One-Time Password is {otp}. It is valid for 10 minutes. Do not share this code with anyone. Ispark"
+        
+        # Send OTP via SMS API
+        try:
+            sms_params = {
+                "username": sms_username,
+                "password": sms_password,
+                "unicode": "false",
+                "from": sms_from,
+                "to": number,
+                "dltContentId": sms_dlt_content_id,
+                "dltPrincipalEntityId": sms_dlt_principal_entity_id,
+                "text": sms_message
+            }
+            
+            print(f"[OTP] Sending OTP to {number} via SMS API")
+            print(f"[OTP] Generated OTP: {otp} (expires at: {expires_at})")
+            print(f"[OTP] SMS API URL: {sms_api_url}")
+            print(f"[OTP] SMS Parameters: {sms_params}")
+            
+            # Build the full URL for debugging (requests will URL-encode automatically)
+            full_url = f"{sms_api_url}?{urllib.parse.urlencode(sms_params)}"
+            print(f"[OTP] Full SMS API URL: {full_url}")
+            
+            response = requests.get(sms_api_url, params=sms_params, timeout=10)
+            response.raise_for_status()
+            
+            print(f"[OTP] SMS API response status: {response.status_code}")
+            print(f"[OTP] SMS API response body: {response.text}")
+            
+            # Parse JSON response to check if SMS was accepted
+            try:
+                response_data = response.json()
+                state = response_data.get("state", "")
+                status_code = response_data.get("statusCode", 0)
+                description = response_data.get("description", "")
+                
+                print(f"[OTP] SMS API response - State: {state}, StatusCode: {status_code}, Description: {description}")
+                
+                if state == "SUBMIT_ACCEPTED" and status_code == 200:
+                    print(f"[OTP] OTP sent successfully to {number}")
+                    transaction_id = response_data.get("transactionId", "")
+                    if transaction_id:
+                        print(f"[OTP] Transaction ID: {transaction_id}")
+                else:
+                    error_msg = f"SMS API returned unexpected state: {state} (statusCode: {status_code}, description: {description})"
+                    print(f"[OTP] ERROR: {error_msg}")
+                    # Log full response for debugging
+                    print(f"[OTP] Full API response: {response_data}")
+                    # Still continue - OTP is stored, but SMS delivery may have failed
+                    
+            except (ValueError, KeyError) as json_error:
+                print(f"[OTP] Warning: Could not parse SMS API response as JSON: {json_error}")
+                print(f"[OTP] Raw response: {response.text}")
+                # Still continue - response was 200, SMS might still be delivered
+                
+        except requests.exceptions.RequestException as e:
+            error_msg = f"Error calling SMS API: {str(e)}"
+            print(f"[OTP] {error_msg}")
+            # Log full error details
+            import traceback
+            traceback.print_exc()
+            # Still return success - OTP is generated and stored
+            # User can still verify OTP even if SMS delivery failed
+            print(f"[OTP] OTP generated but SMS delivery may have failed: {otp}")
+        
+        return SendOtpResponse(message=f"OTP sent to {number}")
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error sending OTP: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Failed to send OTP: {str(e)}")
+
+
+@app.post("/verify-otp-and-call", response_model=VerifyOtpResponse)
+def verify_otp_and_call(
+    request: VerifyOtpRequest,
+    current_user: User = Depends(get_current_user),
+):
+    """Verify OTP and trigger outbound call via Asterisk"""
+    try:
+        number = request.number.strip()
+        otp = request.otp.strip()
+        
+        # Validate inputs
+        if not number or len(number) < 10:
+            raise HTTPException(status_code=400, detail="Invalid mobile number")
+        if not otp or len(otp) != 6:
+            raise HTTPException(status_code=400, detail="Invalid OTP format. Must be 6 digits.")
+        
+        # Check if OTP exists for this number
+        if number not in otp_storage:
+            raise HTTPException(status_code=400, detail="OTP not found. Please request a new OTP.")
+        
+        stored_data = otp_storage[number]
+        
+        # Check if OTP has expired
+        if datetime.now() > stored_data["expires_at"]:
+            del otp_storage[number]
+            raise HTTPException(status_code=400, detail="OTP has expired. Please request a new OTP.")
+        
+        # Verify OTP
+        if stored_data["otp"] != otp:
+            raise HTTPException(status_code=400, detail="Invalid OTP. Please try again.")
+        
+        # OTP is valid, remove it from storage
+        del otp_storage[number]
+        
+        # Get Asterisk SSH configuration from environment variables
+        asterisk_host = os.getenv("ASTERISK_SSH_HOST", "localhost")
+        asterisk_port = int(os.getenv("ASTERISK_SSH_PORT", "22"))
+        asterisk_username = os.getenv("ASTERISK_SSH_USER", "root")
+        asterisk_password = os.getenv("ASTERISK_SSH_PASSWORD", "")
+        asterisk_key_path = os.getenv("ASTERISK_SSH_KEY_PATH", None)  # Optional: path to SSH key
+        asterisk_sip_trunk = os.getenv("ASTERISK_SIP_TRUNK", "airtel_120")  # SIP trunk name
+        asterisk_number_prefix = os.getenv("ASTERISK_NUMBER_PREFIX", "951")  # Number prefix to add
+        
+        # SSH into Asterisk server and trigger call
+        try:
+            ssh = paramiko.SSHClient()
+            ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+            
+            # Connect to SSH server
+            if asterisk_key_path and os.path.exists(asterisk_key_path):
+                # Use SSH key authentication
+                ssh.connect(
+                    hostname=asterisk_host,
+                    port=asterisk_port,
+                    username=asterisk_username,
+                    key_filename=asterisk_key_path,
+                    timeout=10
+                )
+            elif asterisk_password:
+                # Use password authentication
+                ssh.connect(
+                    hostname=asterisk_host,
+                    port=asterisk_port,
+                    username=asterisk_username,
+                    password=asterisk_password,
+                    timeout=10
+                )
+            else:
+                raise HTTPException(
+                    status_code=500,
+                    detail="Asterisk SSH configuration incomplete. Please set ASTERISK_SSH_PASSWORD or ASTERISK_SSH_KEY_PATH."
+                )
+            
+            # Construct the full number with prefix (e.g., 9519911362206)
+            full_number = f"{asterisk_number_prefix}{number}"
+            
+            # Construct the Asterisk command using SIP trunk format
+            # Format: channel originate SIP/951{number}@airtel_120 extension 951{number}@outbound-to-customer-bot
+            asterisk_command = (
+                f'asterisk -rx "channel originate SIP/{full_number}@{asterisk_sip_trunk} '
+                f'extension {full_number}@outbound-to-customer-bot"'
+            )
+            
+            print(f"[Asterisk] Executing command: {asterisk_command}")
+            
+            # Execute the command
+            stdin, stdout, stderr = ssh.exec_command(asterisk_command, timeout=10)
+            
+            # Get output
+            exit_status = stdout.channel.recv_exit_status()
+            output = stdout.read().decode('utf-8')
+            error_output = stderr.read().decode('utf-8')
+            
+            # Close SSH connection
+            ssh.close()
+            
+            if exit_status != 0:
+                print(f"[Asterisk] Error output: {error_output}")
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Failed to trigger call via Asterisk: {error_output or 'Unknown error'}"
+                )
+            
+            print(f"[Asterisk] Call triggered successfully. Output: {output}")
+            
+            return VerifyOtpResponse(
+                status="success",
+                message=f"Call triggered to {number}"
+            )
+            
+        except paramiko.AuthenticationException:
+            raise HTTPException(
+                status_code=500,
+                detail="Asterisk SSH authentication failed. Check credentials."
+            )
+        except paramiko.SSHException as e:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Asterisk SSH connection error: {str(e)}"
+            )
+        except Exception as e:
+            print(f"Error connecting to Asterisk: {e}")
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to connect to Asterisk server: {str(e)}"
+            )
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error verifying OTP and calling: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to verify OTP and trigger call: {str(e)}")
 
 
 if __name__ == "__main__":

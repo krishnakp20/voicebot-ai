@@ -133,3 +133,21 @@ class PromptTemplateResponse(BaseModel):
         from_attributes = True
 
 
+class SendOtpRequest(BaseModel):
+    number: str
+
+
+class SendOtpResponse(BaseModel):
+    message: str
+
+
+class VerifyOtpRequest(BaseModel):
+    number: str
+    otp: str
+
+
+class VerifyOtpResponse(BaseModel):
+    status: str
+    message: str
+
+
