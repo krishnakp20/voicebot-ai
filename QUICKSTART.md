@@ -43,6 +43,23 @@ Create a `.env` file in the project root with:
 DATABASE_URL=mysql+pymysql://root:yourpassword@localhost:3306/voicebot_db
 ELEVENLABS_API_KEY=your-elevenlabs-api-key-here
 SECRET_KEY=your-secret-key-minimum-32-characters-long
+
+# Asterisk SSH Configuration (for outbound calls - optional)
+ASTERISK_SSH_HOST=localhost
+ASTERISK_SSH_PORT=22
+ASTERISK_SSH_USER=root
+ASTERISK_SSH_PASSWORD=your-asterisk-ssh-password
+# ASTERISK_SSH_KEY_PATH=/path/to/ssh/key  # Optional: Use SSH key instead
+ASTERISK_SIP_TRUNK=airtel_120
+ASTERISK_NUMBER_PREFIX=951
+
+# SMS API Configuration (for OTP sending)
+SMS_API_USERNAME=masCallnet1.trans
+SMS_API_PASSWORD=1t3BK
+SMS_API_FROM=Ispark
+SMS_API_URL=https://api.smartping.ai/fe/api/v1/send
+SMS_DLT_CONTENT_ID=1707176439618550283
+SMS_DLT_PRINCIPAL_ENTITY_ID=1001485540000016211
 ```
 
 ### 4. Create Test User

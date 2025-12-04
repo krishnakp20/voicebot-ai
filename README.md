@@ -103,6 +103,14 @@ cp ../.env.example ../.env
 DATABASE_URL=mysql+pymysql://root:yourpassword@localhost:3306/voicebot_db
 ELEVENLABS_API_KEY=your-elevenlabs-api-key
 SECRET_KEY=your-secret-key-min-32-chars
+
+# Asterisk SSH Configuration (for outbound calls)
+ASTERISK_SSH_HOST=localhost
+ASTERISK_SSH_PORT=22
+ASTERISK_SSH_USER=root
+ASTERISK_SSH_PASSWORD=your-asterisk-ssh-password
+# Optional: Use SSH key instead of password
+# ASTERISK_SSH_KEY_PATH=/path/to/ssh/key
 ```
 
 8. Run the FastAPI server:
@@ -170,6 +178,10 @@ db.close()
 - `GET /conversations/{id}/audio` - Get audio URL
 - `POST /sync-elevenlabs` - Manually sync conversations from ElevenLabs
 
+### Outbound Calls
+- `POST /send-otp` - Send OTP to mobile number (requires authentication)
+- `POST /verify-otp-and-call` - Verify OTP and trigger outbound call via Asterisk (requires authentication)
+
 ## Usage
 
 1. **Login**: Navigate to `/login` and use your credentials
@@ -221,6 +233,19 @@ The built files will be in `frontend/dist/`
 - `DATABASE_URL` - MySQL connection string
 - `SECRET_KEY` - JWT secret key (min 32 characters)
 - `ELEVENLABS_API_KEY` - Your ElevenLabs API key
+- `ASTERISK_SSH_HOST` - Asterisk server hostname/IP (default: localhost)
+- `ASTERISK_SSH_PORT` - Asterisk SSH port (default: 22)
+- `ASTERISK_SSH_USER` - Asterisk SSH username (default: root)
+- `ASTERISK_SSH_PASSWORD` - Asterisk SSH password (required if not using key)
+- `ASTERISK_SSH_KEY_PATH` - Path to SSH private key (optional, alternative to password)
+- `ASTERISK_SIP_TRUNK` - SIP trunk name (default: airtel_120)
+- `ASTERISK_NUMBER_PREFIX` - Number prefix to add before mobile number (default: 951)
+- `SMS_API_USERNAME` - SMS API username (default: masCallnet1.trans)
+- `SMS_API_PASSWORD` - SMS API password (default: 1t3BK)
+- `SMS_API_FROM` - SMS sender name (default: Ispark)
+- `SMS_API_URL` - SMS API endpoint URL (default: https://api.smartping.ai/fe/api/v1/send)
+- `SMS_DLT_CONTENT_ID` - DLT content ID for SMS (default: 1707176439618550283)
+- `SMS_DLT_PRINCIPAL_ENTITY_ID` - DLT principal entity ID (default: 1001485540000016211)
 
 ### Frontend (.env)
 - `VITE_API_URL` - Backend API URL (default: http://localhost:8000)
