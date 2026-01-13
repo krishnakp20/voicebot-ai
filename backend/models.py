@@ -24,6 +24,11 @@ class Conversation(Base):
     receiver_number = Column(String(50))
     duration = Column(Integer)  # in seconds
     sentiment = Column(Float)  # sentiment score
+    transcript_summary = Column(Text, nullable=True)
+    data_collection_results = Column(Text, nullable=True)  # JSON stored as text
+    call_summary_title = Column(String(500), nullable=True)
+    evaluation_criteria_results = Column(Text, nullable=True)  # JSON stored as text
+    call_successful = Column(String(50), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
 class Transcript(Base):

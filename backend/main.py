@@ -127,9 +127,57 @@ def ensure_prompt_template_user_id():
         # Table might not exist yet or migration already applied, which is fine
         print(f"Note: Prompt template migration check: {e}")
 
+# Ensure conversation analysis columns exist in conversations table (for existing databases)
+def ensure_conversation_analysis_columns():
+    """Ensure data_collection_results, evaluation_criteria_results, and other analysis columns exist in conversations table"""
+    from sqlalchemy import text, inspect
+    inspector = inspect(engine)
+    try:
+        columns = [col['name'] for col in inspector.get_columns('conversations')]
+        
+        with engine.connect() as conn:
+            if 'transcript_summary' not in columns:
+                conn.execute(text("""
+                    ALTER TABLE conversations 
+                    ADD COLUMN transcript_summary TEXT NULL
+                """))
+                conn.commit()
+            
+            if 'data_collection_results' not in columns:
+                conn.execute(text("""
+                    ALTER TABLE conversations 
+                    ADD COLUMN data_collection_results TEXT NULL
+                """))
+                conn.commit()
+            
+            if 'call_summary_title' not in columns:
+                conn.execute(text("""
+                    ALTER TABLE conversations 
+                    ADD COLUMN call_summary_title VARCHAR(500) NULL
+                """))
+                conn.commit()
+            
+            if 'evaluation_criteria_results' not in columns:
+                conn.execute(text("""
+                    ALTER TABLE conversations 
+                    ADD COLUMN evaluation_criteria_results TEXT NULL
+                """))
+                conn.commit()
+            
+            if 'call_successful' not in columns:
+                conn.execute(text("""
+                    ALTER TABLE conversations 
+                    ADD COLUMN call_successful VARCHAR(50) NULL
+                """))
+                conn.commit()
+    except Exception as e:
+        # Table might not exist yet, which is fine
+        print(f"Note: Conversation analysis columns migration check: {e}")
+
 # Run migration checks on startup
 ensure_receiver_columns()
 ensure_prompt_template_user_id()
+ensure_conversation_analysis_columns()
 
 app = FastAPI(title="VoiceBot AI Dashboard API")
 
@@ -632,6 +680,25 @@ def get_conversation(
 
     evaluation_criteria_results = analysis.get("evaluation_criteria_results")
     call_successful = analysis.get("call_successful") or conv_data.get("call_successful")
+    
+    # Convert dict/object fields to JSON strings for storage
+    data_collection_json = None
+    if data_collection_results:
+        try:
+            data_collection_json = json.dumps(data_collection_results) if isinstance(data_collection_results, (dict, list)) else str(data_collection_results)
+        except:
+            data_collection_json = str(data_collection_results)
+    
+    evaluation_criteria_json = None
+    if evaluation_criteria_results:
+        try:
+            evaluation_criteria_json = json.dumps(evaluation_criteria_results) if isinstance(evaluation_criteria_results, (dict, list)) else str(evaluation_criteria_results)
+        except:
+            evaluation_criteria_json = str(evaluation_criteria_results)
+    
+    call_successful_str = None
+    if call_successful is not None:
+        call_successful_str = str(call_successful)
 
     if conversation:
         conversation.agent = agent_name
@@ -640,6 +707,17 @@ def get_conversation(
         conversation.duration = duration
         conversation.sentiment = sentiment
         conversation.created_at = created_at
+        # Update analysis fields
+        if transcript_summary is not None:
+            conversation.transcript_summary = transcript_summary
+        if call_summary_title is not None:
+            conversation.call_summary_title = call_summary_title
+        if data_collection_json is not None:
+            conversation.data_collection_results = data_collection_json
+        if evaluation_criteria_json is not None:
+            conversation.evaluation_criteria_results = evaluation_criteria_json
+        if call_successful_str is not None:
+            conversation.call_successful = call_successful_str
     else:
         conversation = Conversation(
             conversation_id=conversation_id,
@@ -648,12 +726,32 @@ def get_conversation(
             receiver_number=receiver_number,
             duration=duration,
             sentiment=sentiment,
+            transcript_summary=transcript_summary,
+            call_summary_title=call_summary_title,
+            data_collection_results=data_collection_json,
+            evaluation_criteria_results=evaluation_criteria_json,
+            call_successful=call_successful_str,
             created_at=created_at,
         )
         db.add(conversation)
 
     db.commit()
     db.refresh(conversation)
+    
+    # Parse JSON strings back to dicts for response
+    data_collection_response = None
+    if conversation.data_collection_results:
+        try:
+            data_collection_response = json.loads(conversation.data_collection_results)
+        except:
+            data_collection_response = conversation.data_collection_results
+    
+    evaluation_criteria_response = None
+    if conversation.evaluation_criteria_results:
+        try:
+            evaluation_criteria_response = json.loads(conversation.evaluation_criteria_results)
+        except:
+            evaluation_criteria_response = conversation.evaluation_criteria_results
     
     # Return with additional fields
     return {
@@ -665,11 +763,11 @@ def get_conversation(
         "duration": conversation.duration,
         "sentiment": conversation.sentiment,
         "created_at": conversation.created_at,
-        "transcript_summary": transcript_summary,
-        "data_collection_results": data_collection_results,
-        "call_summary_title": call_summary_title,
-        "evaluation_criteria_results": evaluation_criteria_results,
-        "call_successful": call_successful,
+        "transcript_summary": conversation.transcript_summary or transcript_summary,
+        "data_collection_results": data_collection_response or data_collection_results,
+        "call_summary_title": conversation.call_summary_title or call_summary_title,
+        "evaluation_criteria_results": evaluation_criteria_response or evaluation_criteria_results,
+        "call_successful": conversation.call_successful or call_successful_str,
     }
 
 
@@ -1269,9 +1367,25 @@ def update_agent(
 
 
 def sync_conversations(db: Session) -> int:
+    print(f"[SYNC] Starting conversation sync from ElevenLabs...")
     conversations_data = elevenlabs_client.get_conversations()
     if not conversations_data:
+        print(f"[SYNC] No conversations found in ElevenLabs API")
         return 0
+    
+    print(f"[SYNC] Fetched {len(conversations_data)} conversations from ElevenLabs API")
+    
+    # Log date range of conversations
+    if conversations_data:
+        dates = []
+        for conv in conversations_data:
+            start_time = conv.get("start_time_unix_secs")
+            if start_time:
+                dates.append(datetime.fromtimestamp(start_time))
+        if dates:
+            min_date = min(dates)
+            max_date = max(dates)
+            print(f"[SYNC] Conversation date range: {min_date.strftime('%Y-%m-%d')} to {max_date.strftime('%Y-%m-%d')}")
 
     # Get all agents to resolve agent IDs to names
     agents = elevenlabs_client.get_agents()
@@ -1291,6 +1405,10 @@ def sync_conversations(db: Session) -> int:
                             agent_map[agent_id] = full_agent.get("name") or agent_id
 
     count = 0
+    new_count = 0
+    updated_count = 0
+    skipped_count = 0
+    
     for conv_data in conversations_data:
         conv_id = conv_data.get("conversation_id")
         if not conv_id:
@@ -1340,53 +1458,147 @@ def sync_conversations(db: Session) -> int:
             ""
         )
         
-        # If phone numbers are missing from list response, fetch full conversation details
-        if not caller_number or not receiver_number:
+        # Check if we need to fetch full conversation details
+        # Only fetch if:
+        # 1. Conversation doesn't exist (new conversation)
+        # 2. Existing conversation is missing analysis fields
+        need_full_details = False
+        if not existing:
+            need_full_details = True
+        elif existing and (not existing.data_collection_results or not existing.evaluation_criteria_results or 
+                          not existing.transcript_summary or not existing.call_summary_title):
+            need_full_details = True
+        
+        # Fetch full conversation details only if needed
+        full_conv = None
+        if need_full_details:
             full_conv = elevenlabs_client.get_conversation(conv_id)
-            if full_conv:
-                full_metadata = full_conv.get("metadata", {}) or {}
-                full_phone_call = full_metadata.get("phone_call") or {}
-                
-                # Try all possible field names
-                if not caller_number:
-                    caller_number = (
-                        full_phone_call.get("external_number") or 
-                        full_phone_call.get("caller_number") or 
-                        full_phone_call.get("from_number") or
-                        full_conv.get("caller_number") or
-                        full_conv.get("external_number") or
-                        ""
-                    )
-                if not receiver_number:
-                    receiver_number = (
-                        full_phone_call.get("agent_number") or 
-                        full_phone_call.get("receiver_number") or 
-                        full_phone_call.get("to_number") or
-                        full_phone_call.get("destination_number") or
-                        full_conv.get("receiver_number") or
-                        full_conv.get("agent_number") or
-                        ""
-                    )
+        else:
+            skipped_count += 1
+        
+        # Extract all fields from full conversation if available
+        if full_conv:
+            full_metadata = full_conv.get("metadata", {}) or {}
+            full_phone_call = full_metadata.get("phone_call") or {}
+            full_analysis = full_conv.get("analysis", {}) or {}
+            
+            # Update phone numbers if missing or if we have better data
+            if not caller_number:
+                caller_number = (
+                    full_phone_call.get("external_number") or 
+                    full_phone_call.get("caller_number") or 
+                    full_phone_call.get("from_number") or
+                    full_conv.get("caller_number") or
+                    full_conv.get("external_number") or
+                    ""
+                )
+            if not receiver_number:
+                receiver_number = (
+                    full_phone_call.get("agent_number") or 
+                    full_phone_call.get("receiver_number") or 
+                    full_phone_call.get("to_number") or
+                    full_phone_call.get("destination_number") or
+                    full_conv.get("receiver_number") or
+                    full_conv.get("agent_number") or
+                    ""
+                )
+            
+            # Extract analysis fields
+            transcript_summary = (
+                full_conv.get("transcript_summary")
+                or full_analysis.get("transcript_summary")
+                or full_analysis.get("summary")
+            )
+            
+            call_summary_title = (
+                full_conv.get("call_summary_title")
+                or full_analysis.get("call_summary_title")
+                or full_analysis.get("title")
+            )
+            
+            data_collection_results = (
+                full_conv.get("data_collection_results")
+                or full_conv.get("data_collection")
+                or full_analysis.get("data_collection_results")
+            )
+            
+            evaluation_criteria_results = full_analysis.get("evaluation_criteria_results")
+            call_successful = full_analysis.get("call_successful") or full_conv.get("call_successful")
+            
+            # Convert dict/object fields to JSON strings for storage
+            data_collection_json = None
+            if data_collection_results:
+                try:
+                    data_collection_json = json.dumps(data_collection_results) if isinstance(data_collection_results, (dict, list)) else str(data_collection_results)
+                except:
+                    data_collection_json = str(data_collection_results)
+            
+            evaluation_criteria_json = None
+            if evaluation_criteria_results:
+                try:
+                    evaluation_criteria_json = json.dumps(evaluation_criteria_results) if isinstance(evaluation_criteria_results, (dict, list)) else str(evaluation_criteria_results)
+                except:
+                    evaluation_criteria_json = str(evaluation_criteria_results)
+            
+            call_successful_str = None
+            if call_successful is not None:
+                call_successful_str = str(call_successful)
+        else:
+            # If full conversation fetch failed, use values from list response
+            transcript_summary = None
+            call_summary_title = None
+            data_collection_json = None
+            evaluation_criteria_json = None
+            call_successful_str = None
         
         duration = conv_data.get("call_duration_secs") or conv_data.get("duration") or 0
         sentiment = conv_data.get("sentiment_score") or conv_data.get("sentiment")
 
         if existing:
-            # Always update fields if we have values from API
-            if agent_name:
+            # Update basic fields if they're missing or different
+            updated = False
+            if agent_name and existing.agent != agent_name:
                 existing.agent = agent_name
-            # Update caller_number if we got a value (even if it's different from existing)
-            if caller_number:
+                updated = True
+            if caller_number and existing.caller_number != caller_number:
                 existing.caller_number = caller_number
-            # Update receiver_number if we got a value (even if it's different from existing)
-            if receiver_number:
+                updated = True
+            if receiver_number and existing.receiver_number != receiver_number:
                 existing.receiver_number = receiver_number
-            if duration:
+                updated = True
+            if duration and existing.duration != duration:
                 existing.duration = duration
-            if sentiment is not None:
+                updated = True
+            if sentiment is not None and existing.sentiment != sentiment:
                 existing.sentiment = sentiment
-            existing.created_at = created_at
+                updated = True
+            if existing.created_at != created_at:
+                existing.created_at = created_at
+                updated = True
+            
+            # Update analysis fields if we have them and they're missing
+            if full_conv:
+                if transcript_summary is not None and not existing.transcript_summary:
+                    existing.transcript_summary = transcript_summary
+                    updated = True
+                if call_summary_title is not None and not existing.call_summary_title:
+                    existing.call_summary_title = call_summary_title
+                    updated = True
+                if data_collection_json is not None and not existing.data_collection_results:
+                    existing.data_collection_results = data_collection_json
+                    updated = True
+                if evaluation_criteria_json is not None and not existing.evaluation_criteria_results:
+                    existing.evaluation_criteria_results = evaluation_criteria_json
+                    updated = True
+                if call_successful_str is not None and not existing.call_successful:
+                    existing.call_successful = call_successful_str
+                    updated = True
+            
+            if updated:
+                updated_count += 1
+                count += 1
         else:
+            # New conversation
             conversation = Conversation(
                 conversation_id=conv_id,
                 agent=agent_name if agent_name else None,
@@ -1394,12 +1606,23 @@ def sync_conversations(db: Session) -> int:
                 receiver_number=receiver_number if receiver_number else None,
                 duration=duration if duration else None,
                 sentiment=sentiment,
+                transcript_summary=transcript_summary,
+                call_summary_title=call_summary_title,
+                data_collection_results=data_collection_json,
+                evaluation_criteria_results=evaluation_criteria_json,
+                call_successful=call_successful_str,
                 created_at=created_at,
             )
             db.add(conversation)
-        count += 1
+            new_count += 1
+            count += 1
+        
+        if count % 50 == 0:
+            print(f"[SYNC] Processed {count}/{len(conversations_data)} conversations... (New: {new_count}, Updated: {updated_count}, Skipped: {skipped_count})")
 
     db.commit()
+    print(f"[SYNC] Successfully synced {count} conversations to database")
+    print(f"[SYNC] Summary: {new_count} new, {updated_count} updated, {skipped_count} skipped (already complete)")
     return count
 
 

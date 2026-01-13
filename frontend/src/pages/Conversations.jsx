@@ -120,13 +120,77 @@ const Conversations = () => {
       return
     }
 
-    const headers = [
+    // Parse JSON strings and collect all unique keys from data_collection_results and evaluation_criteria_results
+    const dataCollectionKeys = new Set()
+    const evaluationKeys = new Set()
+
+    filteredConversations.forEach((conv) => {
+      // Parse data_collection_results
+      if (conv.data_collection_results) {
+        try {
+          const dataCollection = typeof conv.data_collection_results === 'string' 
+            ? JSON.parse(conv.data_collection_results) 
+            : conv.data_collection_results
+          
+          if (dataCollection && typeof dataCollection === 'object') {
+            Object.keys(dataCollection).forEach(key => {
+              dataCollectionKeys.add(key)
+            })
+          }
+        } catch (e) {
+          console.warn('Failed to parse data_collection_results:', e)
+        }
+      }
+
+      // Parse evaluation_criteria_results
+      if (conv.evaluation_criteria_results) {
+        try {
+          const evaluation = typeof conv.evaluation_criteria_results === 'string'
+            ? JSON.parse(conv.evaluation_criteria_results)
+            : conv.evaluation_criteria_results
+          
+          if (evaluation && typeof evaluation === 'object') {
+            Object.keys(evaluation).forEach(key => {
+              evaluationKeys.add(key)
+            })
+          }
+        } catch (e) {
+          console.warn('Failed to parse evaluation_criteria_results:', e)
+        }
+      }
+    })
+
+    // Convert sets to sorted arrays for consistent column order
+    const dataCollectionHeaders = Array.from(dataCollectionKeys).sort()
+    const evaluationHeaders = Array.from(evaluationKeys).sort()
+
+    // Build headers
+    const baseHeaders = [
       'Conversation ID',
       'Caller Number',
       'Agent',
       'Sentiment',
       'Duration',
       'Created At',
+      'Transcript Summary',
+      'Call Summary Title',
+      'Call Successful',
+    ]
+
+    // Add data collection headers (e.g., "Sentiment", "Disposition")
+    const dataCollectionHeaderLabels = dataCollectionHeaders.map(key => 
+      key.charAt(0).toUpperCase() + key.slice(1).replace(/_/g, ' ')
+    )
+    
+    // Add evaluation headers
+    const evaluationHeaderLabels = evaluationHeaders.map(key =>
+      `Evaluation: ${key.charAt(0).toUpperCase() + key.slice(1).replace(/_/g, ' ')}`
+    )
+
+    const headers = [
+      ...baseHeaders,
+      ...dataCollectionHeaderLabels,
+      ...evaluationHeaderLabels,
     ]
 
     const escapeField = (value) => {
@@ -138,19 +202,73 @@ const Conversations = () => {
       return stringValue
     }
 
+    // Helper function to extract value from data collection or evaluation object
+    const extractValue = (obj, key) => {
+      if (!obj || typeof obj !== 'object') return ''
+      const item = obj[key]
+      if (item && typeof item === 'object' && 'value' in item) {
+        return item.value || ''
+      }
+      return ''
+    }
+
     const rows = filteredConversations.map((conv) => {
       const sentiment = conv.sentiment !== null && conv.sentiment !== undefined
         ? Number(conv.sentiment).toFixed(2)
         : ''
 
-      return [
+      const transcriptSummary = conv.transcript_summary || ''
+      const callSummaryTitle = conv.call_summary_title || ''
+      const callSuccessful = conv.call_successful || ''
+
+      // Parse data_collection_results
+      let dataCollection = null
+      if (conv.data_collection_results) {
+        try {
+          dataCollection = typeof conv.data_collection_results === 'string'
+            ? JSON.parse(conv.data_collection_results)
+            : conv.data_collection_results
+        } catch (e) {
+          console.warn('Failed to parse data_collection_results for export:', e)
+        }
+      }
+
+      // Parse evaluation_criteria_results
+      let evaluation = null
+      if (conv.evaluation_criteria_results) {
+        try {
+          evaluation = typeof conv.evaluation_criteria_results === 'string'
+            ? JSON.parse(conv.evaluation_criteria_results)
+            : conv.evaluation_criteria_results
+        } catch (e) {
+          console.warn('Failed to parse evaluation_criteria_results for export:', e)
+        }
+      }
+
+      // Build base row
+      const baseRow = [
         escapeField(conv.conversation_id || ''),
         escapeField(conv.caller_number || ''),
         escapeField(conv.agent || ''),
         escapeField(sentiment),
         escapeField(formatDuration(conv.duration)),
         escapeField(formatDate(conv.created_at)),
-      ].join(',')
+        escapeField(transcriptSummary),
+        escapeField(callSummaryTitle),
+        escapeField(callSuccessful),
+      ]
+
+      // Add data collection values (extract "value" from each key)
+      const dataCollectionValues = dataCollectionHeaders.map(key => 
+        escapeField(extractValue(dataCollection, key))
+      )
+
+      // Add evaluation values (extract "value" from each key)
+      const evaluationValues = evaluationHeaders.map(key =>
+        escapeField(extractValue(evaluation, key))
+      )
+
+      return [...baseRow, ...dataCollectionValues, ...evaluationValues].join(',')
     })
 
     const csvContent = [headers.join(','), ...rows].join('\n')

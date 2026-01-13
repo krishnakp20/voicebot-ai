@@ -36,6 +36,12 @@ class ConversationResponse(BaseModel):
     duration: Optional[int]
     sentiment: Optional[float]
     created_at: datetime
+    # Extra analysis fields for list/export views
+    transcript_summary: Optional[str] = None
+    data_collection_results: Optional[str] = None
+    call_summary_title: Optional[str] = None
+    evaluation_criteria_results: Optional[str] = None
+    call_successful: Optional[str] = None
     
     class Config:
         from_attributes = True
