@@ -206,8 +206,18 @@ const Conversations = () => {
     const extractValue = (obj, key) => {
       if (!obj || typeof obj !== 'object') return ''
       const item = obj[key]
-      if (item && typeof item === 'object' && 'value' in item) {
-        return item.value || ''
+      if (item && typeof item === 'object') {
+        // Primary field for data collection objects
+        if ('value' in item) {
+          return item.value ?? ''
+        }
+        // Fallbacks for evaluation criteria objects (e.g. result/score)
+        if ('result' in item) {
+          return item.result ?? ''
+        }
+        if ('score' in item) {
+          return item.score ?? ''
+        }
       }
       return ''
     }
