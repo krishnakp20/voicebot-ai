@@ -30,16 +30,29 @@ const Dashboard = () => {
   const [volumeLoading, setVolumeLoading] = useState(true)
   const [volumeError, setVolumeError] = useState(null)
   const [showOutboundModal, setShowOutboundModal] = useState(false)
+  const [campaignMetrics, setCampaignMetrics] = useState(null)
+  const [dashboardPeriod, setDashboardPeriod] = useState('today')
+  const [dashboardStartDate, setDashboardStartDate] = useState('')
+  const [dashboardEndDate, setDashboardEndDate] = useState('')
 
   useEffect(() => {
-    fetchMetrics()
+    fetchMetrics('today')
     fetchVolumeData()
+    fetchCampaignMetrics('today')
   }, [])
 
-  const fetchMetrics = async () => {
+  const fetchMetrics = async (periodOverride) => {
     try {
       setError(null)
-      const response = await api.get('/conversations/metrics')
+      const period = periodOverride || dashboardPeriod
+      const params = { period }
+      if (period === 'custom' && dashboardStartDate) {
+        params.start_date = dashboardStartDate
+        if (dashboardEndDate) {
+          params.end_date = dashboardEndDate
+        }
+      }
+      const response = await api.get('/conversations/metrics', { params })
       console.log('Metrics response:', response.data)
       
       setMetrics({
@@ -59,6 +72,23 @@ const Dashboard = () => {
       setError(error.response?.data?.detail || error.message || 'Failed to load metrics')
     } finally {
       setLoading(false)
+    }
+  }
+
+  const fetchCampaignMetrics = async (periodOverride) => {
+    try {
+      const period = periodOverride || dashboardPeriod
+      const params = { period }
+      if (period === 'custom' && dashboardStartDate) {
+        params.start_date = dashboardStartDate
+        if (dashboardEndDate) {
+          params.end_date = dashboardEndDate
+        }
+      }
+      const response = await api.get('/campaign/metrics', { params })
+      setCampaignMetrics(response.data)
+    } catch (e) {
+      console.error('Error fetching campaign metrics:', e)
     }
   }
 
@@ -153,50 +183,101 @@ const Dashboard = () => {
   }
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-5 max-w-7xl mx-auto px-2 sm:px-4">
       {/* Header - fixed at top while content scrolls */}
-      <div className="flex items-center justify-between sticky top-0 z-10 bg-gray-50 pb-3">
-        <div>
-          <h1 className="text-xl font-semibold text-gray-800">Dashboard</h1>
-          <p className="text-xs text-gray-500 mt-0.5">Voice AI performance summary</p>
-        </div>
-        <div className="flex items-center gap-4">
-          <button
-            onClick={() => setShowOutboundModal(true)}
-            className="flex items-center space-x-2 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors shadow-sm"
-          >
-            <PhoneIcon className="h-5 w-5" />
-            <span className="font-medium">OB Call</span>
-          </button>
-          <div className="text-right">
-            <p className="text-[11px] text-gray-500 uppercase tracking-wide">Total Conversations</p>
-            <p className="text-base font-semibold text-gray-800">{metrics.total_conversations || 0}</p>
+      <div className="sticky top-0 z-10 pb-3 bg-gradient-to-b from-gray-50 via-gray-50 to-transparent">
+        <div className="flex items-center justify-between bg-white border border-gray-200 rounded-xl shadow-sm px-4 py-3">
+          <div>
+            <h1 className="text-lg sm:text-xl font-semibold text-gray-900">Dashboard</h1>
+            <p className="text-[11px] text-gray-500 mt-0.5">
+              Voice AI performance overview for your selected date range
+            </p>
+          </div>
+          <div className="flex items-center gap-4">
+            {/* Global date filter for entire dashboard */}
+            <div className="flex flex-col items-end gap-1">
+              <div className="inline-flex items-center bg-gray-50 border border-gray-200 rounded-full shadow-sm overflow-hidden">
+              {['today', 'yesterday', 'week', 'custom'].map((period) => (
+                <button
+                  key={period}
+                  type="button"
+                  onClick={() => {
+                    setDashboardPeriod(period)
+                    if (period !== 'custom') {
+                      setDashboardStartDate('')
+                      setDashboardEndDate('')
+                      fetchMetrics(period)
+                      fetchCampaignMetrics(period)
+                    }
+                  }}
+                  className={`px-3 py-1 text-[11px] font-medium border-l border-gray-200 first:border-l-0 transition-colors ${
+                    dashboardPeriod === period
+                      ? 'bg-blue-600 text-white'
+                      : 'bg-gray-50 text-gray-600 hover:bg-white'
+                  }`}
+                >
+                  {period === 'today' && 'Today'}
+                  {period === 'yesterday' && 'Yesterday'}
+                  {period === 'week' && 'This week'}
+                  {period === 'custom' && 'Custom'}
+                </button>
+              ))}
+            </div>
+              {dashboardPeriod === 'custom' && (
+                <div className="flex items-center gap-1 text-[11px]">
+                  <input
+                    type="date"
+                    value={dashboardStartDate}
+                    onChange={(e) => setDashboardStartDate(e.target.value)}
+                    className="border border-gray-300 rounded-md px-1 py-0.5 bg-white"
+                  />
+                  <span className="text-gray-500">to</span>
+                  <input
+                    type="date"
+                    value={dashboardEndDate}
+                    onChange={(e) => setDashboardEndDate(e.target.value)}
+                    className="border border-gray-300 rounded-md px-1 py-0.5 bg-white"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (!dashboardStartDate) {
+                        alert('Please select a start date for the custom range.')
+                        return
+                      }
+                      fetchMetrics('custom')
+                      fetchCampaignMetrics('custom')
+                    }}
+                    className="ml-1 px-2 py-0.5 rounded-md bg-blue-600 text-white hover:bg-blue-700"
+                  >
+                    Apply
+                  </button>
+                </div>
+              )}
+            </div>
+            <button
+              onClick={() => setShowOutboundModal(true)}
+              className="hidden sm:inline-flex items-center space-x-2 px-3 py-1.5 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors shadow-sm text-xs"
+            >
+              <PhoneIcon className="h-4 w-4" />
+              <span className="font-medium">OB Call</span>
+            </button>
           </div>
         </div>
       </div>
 
-      {/* Key Metrics Cards - Compact Design */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-        {/* Today's Conversations */}
+      {/* Top KPI Row - all in a single row */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
+        {/* Total Conversations */}
         <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-3 hover:shadow">
           <div className="flex items-start justify-between">
             <div className="flex-1">
-              <p className="text-[11px] font-medium text-gray-500 uppercase tracking-wide mb-0.5">Today</p>
-              <p className="text-xl font-semibold text-gray-900">{metrics.todays_conversations || 0}</p>
-              {metrics.todays_change_percent !== 0 && (
-                <div className={`flex items-center text-[11px] ${metrics.todays_change_percent >= 0 ? 'text-green-600' : 'text-red-600'}`}>
-                  {metrics.todays_change_percent >= 0 ? (
-                    <ArrowTrendingUpIcon className="w-3.5 h-3.5 mr-1" />
-                  ) : (
-                    <ArrowTrendingDownIcon className="w-3.5 h-3.5 mr-1" />
-                  )}
-                  <span className="font-medium">
-                    {Math.abs(metrics.todays_change_percent).toFixed(1)}% vs yesterday
-                  </span>
-                </div>
-              )}
+              <p className="text-[11px] font-medium text-gray-500 uppercase tracking-wide mb-0.5">
+                Conversations
+              </p>
+              <p className="text-xl font-semibold text-gray-900">{metrics.total_conversations || 0}</p>
             </div>
-            <div className="bg-gradient-to-br from-green-400 to-green-600 rounded-lg p-2">
+            <div className="bg-gradient-to-br from-indigo-400 to-blue-600 rounded-lg p-2">
               <ChatBubbleLeftRightIcon className="w-4 h-4 text-white" />
             </div>
           </div>
@@ -206,20 +287,10 @@ const Dashboard = () => {
         <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-3 hover:shadow">
           <div className="flex items-start justify-between">
             <div className="flex-1">
-              <p className="text-[11px] font-medium text-gray-500 uppercase tracking-wide mb-0.5">Total Agents</p>
+              <p className="text-[11px] font-medium text-gray-500 uppercase tracking-wide mb-0.5">
+                Agents
+              </p>
               <p className="text-xl font-semibold text-gray-900">{metrics.total_agents || 0}</p>
-              {metrics.agents_change_percent !== 0 && (
-                <div className={`flex items-center text-[11px] ${metrics.agents_change_percent >= 0 ? 'text-green-600' : 'text-red-600'}`}>
-                  {metrics.agents_change_percent >= 0 ? (
-                    <ArrowTrendingUpIcon className="w-3.5 h-3.5 mr-1" />
-                  ) : (
-                    <ArrowTrendingDownIcon className="w-3.5 h-3.5 mr-1" />
-                  )}
-                  <span className="font-medium">
-                    {Math.abs(metrics.agents_change_percent).toFixed(1)}%
-                  </span>
-                </div>
-              )}
             </div>
             <div className="bg-gradient-to-br from-blue-400 to-blue-600 rounded-lg p-2">
               <UserGroupIcon className="w-4 h-4 text-white" />
@@ -227,28 +298,16 @@ const Dashboard = () => {
           </div>
         </div>
 
-        {/* Avg. Response Time */}
+        {/* Total Duration */}
         <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-3 hover:shadow">
           <div className="flex items-start justify-between">
             <div className="flex-1">
-              <p className="text-[11px] font-medium text-gray-500 uppercase tracking-wide mb-0.5">Avg Response Time</p>
-              <p className="text-xl font-semibold text-gray-900">
-                {metrics.avg_response_time && metrics.avg_response_time > 0 
-                  ? `${metrics.avg_response_time.toFixed(1)}s` 
-                  : 'N/A'}
+              <p className="text-[11px] font-medium text-gray-500 uppercase tracking-wide mb-0.5">
+                Total Duration
               </p>
-              {metrics.response_time_change_percent !== 0 && (
-                <div className={`flex items-center text-[11px] ${metrics.response_time_change_percent >= 0 ? 'text-red-600' : 'text-green-600'}`}>
-                  {metrics.response_time_change_percent >= 0 ? (
-                    <ArrowTrendingUpIcon className="w-3.5 h-3.5 mr-1" />
-                  ) : (
-                    <ArrowTrendingDownIcon className="w-3.5 h-3.5 mr-1" />
-                  )}
-                  <span className="font-medium">
-                    {Math.abs(metrics.response_time_change_percent).toFixed(1)}%
-                  </span>
-                </div>
-              )}
+              <p className="text-xl font-semibold text-gray-900">
+                {formatDuration(metrics.total_duration || 0)}
+              </p>
             </div>
             <div className="bg-gradient-to-br from-purple-400 to-purple-600 rounded-lg p-2">
               <ClockIcon className="w-4 h-4 text-white" />
@@ -256,64 +315,175 @@ const Dashboard = () => {
           </div>
         </div>
 
-        {/* Overall Sentiment */}
+        {/* Average Sentiment */}
         <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-3 hover:shadow">
           <div className="flex items-start justify-between">
             <div className="flex-1">
-              <p className="text-[11px] font-medium text-gray-500 uppercase tracking-wide mb-0.5">Sentiment</p>
-              <p className="text-xl font-semibold text-gray-900">{sentimentPercentage}%</p>
-              {metrics.sentiment_change_percent !== 0 && (
-                <div className={`flex items-center text-[11px] ${metrics.sentiment_change_percent >= 0 ? 'text-green-600' : 'text-red-600'}`}>
-                  {metrics.sentiment_change_percent >= 0 ? (
-                    <ArrowTrendingUpIcon className="w-3.5 h-3.5 mr-1" />
-                  ) : (
-                    <ArrowTrendingDownIcon className="w-3.5 h-3.5 mr-1" />
-                  )}
-                  <span className="font-medium">
-                    {Math.abs(metrics.sentiment_change_percent).toFixed(1)}%
-                  </span>
-                </div>
-              )}
+              <p className="text-[11px] font-medium text-gray-500 uppercase tracking-wide mb-0.5">
+                Avg Sentiment
+              </p>
+              <p className="text-xl font-semibold text-gray-900">
+                {(metrics.avg_sentiment || 0).toFixed(2)} ({sentimentPercentage}%)
+              </p>
             </div>
             <div className="bg-gradient-to-br from-teal-400 to-teal-600 rounded-lg p-2">
               <ChartBarIcon className="w-4 h-4 text-white" />
             </div>
           </div>
         </div>
+
+        {/* Avg Response Time */}
+        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-3 hover:shadow">
+          <div className="flex items-start justify-between">
+            <div className="flex-1">
+              <p className="text-[11px] font-medium text-gray-500 uppercase tracking-wide mb-0.5">
+                Avg Response Time
+              </p>
+              <p className="text-xl font-semibold text-gray-900">
+                {metrics.avg_response_time && metrics.avg_response_time > 0
+                  ? `${metrics.avg_response_time.toFixed(1)}s`
+                  : 'N/A'}
+              </p>
+            </div>
+            <div className="bg-gradient-to-br from-amber-400 to-orange-500 rounded-lg p-2">
+              <ClockIcon className="w-4 h-4 text-white" />
+            </div>
+          </div>
+        </div>
       </div>
 
-      {/* Secondary Metrics Row */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-        {/* Total Conversations */}
-        <div className="bg-gradient-to-br from-white to-gray-50 rounded-lg border border-gray-200 p-3">
-          <div className="flex items-center justify-between">
+      {/* Call & Quality Analytics */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        {/* Call Performance */}
+        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-4">
+          <div className="flex items-center justify-between mb-3 gap-3">
             <div>
-              <p className="text-xs font-medium text-gray-600 mb-0.5">Total Conversations</p>
-              <p className="text-lg font-semibold text-gray-800">{metrics.total_conversations || 0}</p>
+              <h2 className="text-base font-semibold text-gray-800">Call Performance</h2>
+              <p className="text-[11px] text-gray-500">Snapshot of the current campaign</p>
             </div>
-            <ChatBubbleLeftRightIcon className="w-6 h-6 text-gray-400" />
+          </div>
+          <div className="border border-gray-100 rounded-lg overflow-hidden text-xs">
+            <div className="grid grid-cols-6 bg-gray-50 border-b border-gray-100 text-[11px] font-semibold text-gray-600">
+              <div className="px-3 py-2">Calls Attempted</div>
+              <div className="px-3 py-2">Calls Completed</div>
+              <div className="px-3 py-2">Lead Qualified</div>
+              <div className="px-3 py-2">Call Back Booked</div>
+              <div className="px-3 py-2">Goal Completion</div>
+              <div className="px-3 py-2">DND Numbers</div>
+            </div>
+            <div className="grid grid-cols-6 text-sm text-gray-900">
+              <div className="px-3 py-3 border-r border-gray-100 text-center font-semibold">
+                {campaignMetrics?.calls_attempted ?? '—'}
+              </div>
+              <div className="px-3 py-3 border-r border-gray-100 text-center">
+                {campaignMetrics?.calls_completed ?? '—'}
+              </div>
+              <div className="px-3 py-3 border-r border-gray-100 text-center">
+                {campaignMetrics?.lead_qualified ?? '—'}
+              </div>
+              <div className="px-3 py-3 border-r border-gray-100 text-center">
+                {campaignMetrics?.call_back_booked ?? '—'}
+              </div>
+              <div className="px-3 py-3 border-r border-gray-100 text-center">
+                {campaignMetrics?.goal_completion_rate ?? '—'}
+              </div>
+              <div className="px-3 py-3 text-center">
+                {campaignMetrics?.dnd_numbers ?? '—'}
+              </div>
+            </div>
           </div>
         </div>
 
-        {/* Total Duration */}
-        <div className="bg-gradient-to-br from-white to-gray-50 rounded-lg border border-gray-200 p-3">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-xs font-medium text-gray-600 mb-0.5">Total Duration</p>
-              <p className="text-lg font-semibold text-gray-800">{formatDuration(metrics.total_duration || 0)}</p>
-            </div>
-            <ClockIcon className="w-6 h-6 text-gray-400" />
-          </div>
-        </div>
+        {/* Quality & VOC */}
+        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-4">
+          <h2 className="text-base font-semibold text-gray-800 mb-3">Quality Insights</h2>
 
-        {/* Average Sentiment Score */}
-        <div className="bg-gradient-to-br from-white to-gray-50 rounded-lg border border-gray-200 p-3">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-xs font-medium text-gray-600 mb-0.5">Avg Sentiment Score</p>
-              <p className="text-lg font-semibold text-gray-800">{(metrics.avg_sentiment || 0).toFixed(2)}</p>
+          {/* Conversation Intelligence */}
+          <div className="mb-4">
+            <p className="text-[11px] font-semibold text-gray-500 uppercase tracking-wide mb-2">
+              Conversation Intelligence
+            </p>
+            <div className="grid grid-cols-5 gap-2 text-xs">
+              <div className="bg-green-50 border border-green-100 rounded-md px-3 py-2">
+                <p className="text-[11px] text-gray-500">Positive</p>
+                <p className="text-sm font-semibold text-gray-900">
+                  {campaignMetrics?.sentiment_positive ?? '—'}
+                </p>
+              </div>
+              <div className="bg-gray-50 border border-gray-100 rounded-md px-3 py-2">
+                <p className="text-[11px] text-gray-500">Neutral</p>
+                <p className="text-sm font-semibold text-gray-900">
+                  {campaignMetrics?.sentiment_neutral ?? '—'}
+                </p>
+              </div>
+              <div className="bg-red-50 border border-red-100 rounded-md px-3 py-2">
+                <p className="text-[11px] text-gray-500">Negative</p>
+                <p className="text-sm font-semibold text-gray-900">
+                  {campaignMetrics?.sentiment_negative ?? '—'}
+                </p>
+              </div>
+              <div className="bg-indigo-50 border border-indigo-100 rounded-md px-3 py-2">
+                <p className="text-[11px] text-gray-500">Intent Recognition</p>
+                <p className="text-sm font-semibold text-gray-900">
+                  {campaignMetrics?.intent_recognition ?? '—'}
+                </p>
+              </div>
+              <div className="bg-orange-50 border border-orange-100 rounded-md px-3 py-2">
+                <p className="text-[11px] text-gray-500">Switch to Human</p>
+                <p className="text-sm font-semibold text-gray-900">
+                  {campaignMetrics?.switch_to_human_ratio ?? '—'}
+                </p>
+              </div>
             </div>
-            <ChartBarIcon className="w-6 h-6 text-gray-400" />
+          </div>
+
+          {/* Dropped Analytics & VOC */}
+          <div className="grid grid-cols-2 gap-3 text-xs">
+            <div>
+              <p className="text-[11px] font-semibold text-gray-500 uppercase tracking-wide mb-2">
+                Dropped Analytics
+              </p>
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <span className="text-gray-600">Dropped at Greeting</span>
+                  <span className="font-semibold text-gray-900">
+                    {campaignMetrics?.dropped_at_greeting ?? '—'}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-gray-600">Initial Drop</span>
+                  <span className="font-semibold text-gray-900">
+                    {campaignMetrics?.initial_drop ?? '—'}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-gray-600">Before Resolution</span>
+                  <span className="font-semibold text-gray-900">
+                    {campaignMetrics?.dropped_before_resolution ?? '—'}
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            <div>
+              <p className="text-[11px] font-semibold text-gray-500 uppercase tracking-wide mb-2">
+                VOC (Voice of Customer)
+              </p>
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <span className="text-gray-600">Interested</span>
+                  <span className="font-semibold text-gray-900">
+                    {campaignMetrics?.voc_interested ?? '—'}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-gray-600">Not Interested</span>
+                  <span className="font-semibold text-gray-900">
+                    {campaignMetrics?.voc_not_interested ?? '—'}
+                  </span>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
       </div>

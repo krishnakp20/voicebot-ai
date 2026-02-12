@@ -248,19 +248,35 @@ class ElevenLabsClient:
             return None
     
     def get_agents(self) -> List[Dict]:
-        """Fetch all agents from ElevenLabs"""
+        """Fetch all agents from ElevenLabs (handles pagination)"""
+        all_agents = []
+        cursor = None
         try:
-            response = requests.get(
-                f"{self.base_url}/convai/agents",
-                headers=self.headers
-            )
-            response.raise_for_status()
-            data = response.json()
-            if isinstance(data, list):
-                return data
-            elif isinstance(data, dict) and "agents" in data:
-                return data["agents"]
-            return []
+            while True:
+                params = {"page_size": 100}
+                if cursor:
+                    params["cursor"] = cursor
+                response = requests.get(
+                    f"{self.base_url}/convai/agents",
+                    headers=self.headers,
+                    params=params
+                )
+                response.raise_for_status()
+                data = response.json()
+                agents = []
+                if isinstance(data, list):
+                    all_agents = data
+                    break
+                elif isinstance(data, dict) and "agents" in data:
+                    agents = data["agents"]
+                    all_agents.extend(agents)
+                    has_more = data.get("has_more", False)
+                    cursor = data.get("next_cursor")
+                    if not has_more or not cursor:
+                        break
+                else:
+                    break
+            return all_agents
         except Exception as e:
             print(f"Error fetching agents: {e}")
             return []

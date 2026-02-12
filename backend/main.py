@@ -36,6 +36,7 @@ from schemas import (
     SendOtpResponse,
     VerifyOtpRequest,
     VerifyOtpResponse,
+    CampaignMetricsResponse,
 )
 from auth import verify_password, create_access_token, verify_token
 from elevenlabs_client import (
@@ -276,11 +277,28 @@ def create_user(
 def get_conversations(
     skip: int = 0,
     limit: int = 100,
+    start_date: Optional[date] = None,
+    end_date: Optional[date] = None,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    # Filter conversations by user's receiver_number OR by allowed agents
+    # Filter conversations by user's receiver_number, allowed agents, and optional date range
     query = db.query(Conversation)
+    
+    # Apply date range - default to current date if none provided
+    if not start_date and not end_date:
+        today = date.today()
+        start_date = today
+        end_date = today
+    elif start_date and not end_date:
+        end_date = start_date
+    
+    if start_date:
+        start_dt = datetime.combine(start_date, datetime.min.time())
+        query = query.filter(Conversation.created_at >= start_dt)
+    if end_date:
+        end_dt = datetime.combine(end_date + timedelta(days=1), datetime.min.time())
+        query = query.filter(Conversation.created_at < end_dt)
     
     # Get all agents from ElevenLabs to build agent mapping
     agents = elevenlabs_client.get_agents()
@@ -395,108 +413,65 @@ def get_conversations(
             db.query(Conversation).filter(Conversation.id == conv_id).update({"agent": agent_name})
         db.commit()
     
-    if not conversations:
-        sync_conversations(db)
-        # Re-query with same filter conditions after sync
-        query = db.query(Conversation)
-        
-        # Rebuild filter conditions (same as above)
-        filter_conditions = []
-        
-        if current_user.receiver_number:
-            filter_conditions.append(Conversation.receiver_number == current_user.receiver_number)
-        
-        # Rebuild allowed agents list after sync
-        allowed_agent_identifiers = set()
-        if current_user.receiver_number:
-            conversations_with_receiver = (
-                db.query(Conversation)
-                .filter(Conversation.receiver_number == current_user.receiver_number)
-                .filter(Conversation.agent.isnot(None))
-                .all()
-            )
-            allowed_agent_identifiers = {conv.agent for conv in conversations_with_receiver if conv.agent}
-        else:
-            all_conversations = (
-                db.query(Conversation)
-                .filter(Conversation.agent.isnot(None))
-                .all()
-            )
-            allowed_agent_identifiers = {conv.agent for conv in all_conversations if conv.agent}
-        
-        if allowed_agent_identifiers:
-            agent_match_conditions = []
-            for identifier in allowed_agent_identifiers:
-                if identifier in agent_id_to_name:
-                    agent_match_conditions.append(Conversation.agent == identifier)
-                elif identifier in agent_name_to_id:
-                    agent_match_conditions.append(Conversation.agent == identifier)
-                else:
-                    agent_match_conditions.append(Conversation.agent == identifier)
-            
-            for agent_name, agent_id in agent_name_to_id.items():
-                if agent_name.lower() in [ident.lower() for ident in allowed_agent_identifiers]:
-                    agent_match_conditions.append(Conversation.agent == agent_id)
-                    agent_match_conditions.append(Conversation.agent == agent_name)
-            
-            if agent_match_conditions:
-                filter_conditions.append(or_(*agent_match_conditions))
-        
-        if filter_conditions:
-            query = query.filter(or_(*filter_conditions))
-        
-        conversations = (
-            query
-            .order_by(Conversation.created_at.desc())
-            .offset(skip)
-            .limit(limit)
-            .all()
-        )
-        # Resolve agent IDs again after sync (in memory)
-        for conv in conversations:
-            if conv.agent and conv.agent.startswith("agent_"):
-                resolved_name = agent_map.get(conv.agent)
-                if resolved_name:
-                    conv.agent = resolved_name
-    
+    # No auto-sync when empty. To pull conversations from ElevenLabs, use POST /sync-elevenlabs.
     return conversations
 
 
 @app.get("/conversations/metrics")
 def get_conversation_metrics(
+    period: str = "today",  # "today" | "yesterday" | "week" | "custom"
+    start_date: Optional[date] = None,
+    end_date: Optional[date] = None,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    """High-level conversation metrics for dashboard, with the same date filter
+    options as /campaign/metrics."""
+
     # Filter by user's receiver_number if mapped
     base_query = db.query(Conversation)
     if current_user.receiver_number:
         base_query = base_query.filter(Conversation.receiver_number == current_user.receiver_number)
-    
-    total = base_query.count()
-    today_start = datetime.combine(date.today(), datetime.min.time())
-    today_end = today_start + timedelta(days=1)
-    yesterday_start = today_start - timedelta(days=1)
-    yesterday_end = today_start
 
-    todays_count = (
-        base_query
-        .filter(Conversation.created_at >= today_start, Conversation.created_at < today_end)
-        .count()
-    )
-    yesterdays_count = (
-        base_query
-        .filter(
-            Conversation.created_at >= yesterday_start, Conversation.created_at < yesterday_end
-        )
-        .count()
-    )
+    # Apply date range similar to /campaign/metrics
+    start_dt: Optional[datetime] = None
+    end_dt: Optional[datetime] = None
 
-    if yesterdays_count > 0:
-        todays_change = ((todays_count - yesterdays_count) / yesterdays_count) * 100
-    elif todays_count > 0:
-        todays_change = 100.0
+    if period == "today":
+        today_start = datetime.combine(date.today(), datetime.min.time())
+        start_dt = today_start
+        end_dt = today_start + timedelta(days=1)
+    elif period == "yesterday":
+        today = date.today()
+        yesterday = today - timedelta(days=1)
+        start_dt = datetime.combine(yesterday, datetime.min.time())
+        end_dt = datetime.combine(today, datetime.min.time())
+    elif period in ("week", "this_week"):
+        today = date.today()
+        monday = today - timedelta(days=today.weekday())
+        start_dt = datetime.combine(monday, datetime.min.time())
+        end_dt = datetime.combine(today + timedelta(days=1), datetime.min.time())
+    elif period == "custom":
+        if not start_date:
+            raise HTTPException(
+                status_code=400,
+                detail="start_date is required when period='custom' (format: YYYY-MM-DD)",
+            )
+        start_dt = datetime.combine(start_date, datetime.min.time())
+        if end_date:
+            end_dt = datetime.combine(end_date + timedelta(days=1), datetime.min.time())
     else:
-        todays_change = 0.0
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid period. Must be one of: today, yesterday, week, custom",
+        )
+
+    if start_dt:
+        base_query = base_query.filter(Conversation.created_at >= start_dt)
+    if end_dt:
+        base_query = base_query.filter(Conversation.created_at < end_dt)
+
+    total = base_query.count()
 
     if total == 0:
         return {
@@ -516,75 +491,32 @@ def get_conversation_metrics(
     sentiments = [c.sentiment for c in conversations if c.sentiment is not None]
     avg_sentiment = sum(sentiments) / len(sentiments) if sentiments else 0
 
-    yesterday_conversations = (
-        base_query
-        .filter(
-            Conversation.created_at >= yesterday_start, Conversation.created_at < yesterday_end
-        )
-        .all()
-    )
-    yesterday_sentiments = [
-        c.sentiment for c in yesterday_conversations if c.sentiment is not None
-    ]
-    if yesterday_sentiments:
-        avg_yesterday_sentiment = sum(yesterday_sentiments) / len(yesterday_sentiments)
-        if avg_yesterday_sentiment != 0:
-            sentiment_change = (
-                (avg_sentiment - avg_yesterday_sentiment) / avg_yesterday_sentiment
-            ) * 100
-        else:
-            sentiment_change = 0
-    else:
-        sentiment_change = 0
-
     total_duration = sum(c.duration or 0 for c in conversations)
 
-    # Get unique agents only from conversations filtered by receiver_number
+    # Unique agents within the period
     unique_agents = {c.agent for c in conversations if c.agent}
-    yesterday_unique_agents = {c.agent for c in yesterday_conversations if c.agent}
-    
-    # Count only agents that appear in this user's conversations
     total_agents = len(unique_agents)
-    
-    # Calculate agents change percent
-    if len(yesterday_unique_agents) > 0:
-        agents_change = ((total_agents - len(yesterday_unique_agents)) / len(yesterday_unique_agents)) * 100
-    elif total_agents > 0:
-        agents_change = 100.0
-    else:
-        agents_change = 0.0
 
-    # Calculate average response time estimate from conversation duration and count
-    # If we have conversations with duration, estimate response time as avg duration per conversation
-    # This is a rough estimate - actual response time would need to come from ElevenLabs API
+    # For filtered ranges we don't compute day-over-day deltas;
+    # keep change percentages at 0 for now.
+    todays_conversations = total
+    todays_change_percent = 0.0
+    sentiment_change = 0.0
+    agents_change = 0.0
+    response_time_change = 0.0
+
+    # Average response time estimate (same rough heuristic)
     conversations_with_duration = [c for c in conversations if c.duration and c.duration > 0]
     if conversations_with_duration:
-        # Estimate response time as average conversation duration divided by a factor
-        # Assuming an average conversation has multiple turns, divide by 10 as rough estimate
         avg_response_time = sum(c.duration for c in conversations_with_duration) / len(conversations_with_duration) / 10
-        # Cap at reasonable maximum (e.g., 5 seconds)
         avg_response_time = min(avg_response_time, 5.0)
-        
-        # Calculate yesterday's response time for comparison
-        yesterday_conv_with_duration = [c for c in yesterday_conversations if c.duration and c.duration > 0]
-        if yesterday_conv_with_duration:
-            avg_yesterday_response_time = sum(c.duration for c in yesterday_conv_with_duration) / len(yesterday_conv_with_duration) / 10
-            avg_yesterday_response_time = min(avg_yesterday_response_time, 5.0)
-            if avg_yesterday_response_time > 0:
-                response_time_change = ((avg_response_time - avg_yesterday_response_time) / avg_yesterday_response_time) * 100
-            else:
-                response_time_change = 0.0
-        else:
-            response_time_change = 0.0
     else:
-        # No conversation data available
         avg_response_time = 0.0
-        response_time_change = 0.0
 
     return {
         "total_conversations": total,
-        "todays_conversations": todays_count,
-        "todays_change_percent": round(todays_change, 1),
+        "todays_conversations": todays_conversations,
+        "todays_change_percent": round(todays_change_percent, 1),
         "avg_sentiment": round(avg_sentiment, 2),
         "sentiment_change_percent": round(sentiment_change, 1),
         "total_duration": total_duration,
@@ -593,6 +525,136 @@ def get_conversation_metrics(
         "avg_response_time": round(avg_response_time, 1),
         "response_time_change_percent": round(response_time_change, 1),
     }
+
+
+@app.get("/campaign/metrics", response_model=CampaignMetricsResponse)
+def get_campaign_metrics(
+    period: str = "today",  # "today" | "yesterday" | "week" | "custom"
+    start_date: Optional[date] = None,  # used when period="custom"
+    end_date: Optional[date] = None,    # used when period="custom"
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Return campaign-level KPIs for the current user's receiver_number.
+
+    Date filters (query params):
+    - period=today (default)    -> only today's conversations
+    - period=yesterday          -> only yesterday's conversations
+    - period=week               -> Monday..today of current week
+    - period=custom             -> start_date / end_date (YYYY-MM-DD)
+    """
+    base_query = db.query(Conversation)
+    if current_user.receiver_number:
+        base_query = base_query.filter(Conversation.receiver_number == current_user.receiver_number)
+
+    # Apply date filters
+    start_dt: Optional[datetime] = None
+    end_dt: Optional[datetime] = None
+
+    if period == "today":
+        today_start = datetime.combine(date.today(), datetime.min.time())
+        start_dt = today_start
+        end_dt = today_start + timedelta(days=1)
+    elif period == "yesterday":
+        today = date.today()
+        yesterday = today - timedelta(days=1)
+        start_dt = datetime.combine(yesterday, datetime.min.time())
+        end_dt = datetime.combine(today, datetime.min.time())
+    elif period in ("week", "this_week"):
+        today = date.today()
+        monday = today - timedelta(days=today.weekday())
+        start_dt = datetime.combine(monday, datetime.min.time())
+        end_dt = datetime.combine(today + timedelta(days=1), datetime.min.time())
+    elif period == "custom":
+        if not start_date:
+            raise HTTPException(
+                status_code=400,
+                detail="start_date is required when period='custom' (format: YYYY-MM-DD)",
+            )
+        start_dt = datetime.combine(start_date, datetime.min.time())
+        if end_date:
+            end_dt = datetime.combine(end_date + timedelta(days=1), datetime.min.time())
+    elif period not in ("today", "yesterday", "week"):
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid period. Must be one of: today, yesterday, week, custom",
+        )
+
+    if start_dt:
+        base_query = base_query.filter(Conversation.created_at >= start_dt)
+    if end_dt:
+        base_query = base_query.filter(Conversation.created_at < end_dt)
+
+    conversations = base_query.all()
+    calls_attempted = len(conversations)
+    # Treat "completed" as any conversation with duration > 0
+    completed = [c for c in conversations if (c.duration or 0) > 0]
+    calls_completed = len(completed)
+
+    # We don't have explicit lead status; approximate "qualified" as
+    # conversations with positive sentiment (> 0.3)
+    qualified = [c for c in conversations if (c.sentiment or 0) > 0.3]
+    lead_qualified = len(qualified)
+
+    # No explicit "callback booked" flag; placeholder as subset of qualified
+    call_back_booked = min(lead_qualified, max(0, lead_qualified // 2))
+
+    goal_completion_rate = "0%"
+    if calls_attempted:
+        goal_completion_rate = f"{round((call_back_booked / calls_attempted) * 100)}%"
+
+    # We don't track DND numbers in conversations table; keep as 0 for now
+    dnd_numbers = 0
+
+    # Sentiment buckets
+    positives = [c for c in conversations if (c.sentiment or 0) > 0.3]
+    neutrals = [c for c in conversations if -0.3 <= (c.sentiment or 0) <= 0.3]
+    negatives = [c for c in conversations if (c.sentiment or 0) < -0.3]
+
+    def pct(part, whole):
+        return f"{round((part / whole) * 100)}%" if whole else "0%"
+
+    sentiment_positive = pct(len(positives), len(conversations))
+    sentiment_neutral = pct(len(neutrals), len(conversations))
+    sentiment_negative = pct(len(negatives), len(conversations))
+
+    # We don't have explicit intent or handoff flags yet
+    intent_recognition = "0%"
+    switch_to_human_ratio = "0%"
+
+    # Drop-off approximations based on very rough position in chronological order
+    dropped_at_greeting = 0
+    initial_drop = 0
+    dropped_before_resolution = 0
+    short_calls = [c for c in conversations if 0 < (c.duration or 0) <= 30]
+    mid_calls = [c for c in conversations if 30 < (c.duration or 0) <= 90]
+    long_calls = [c for c in conversations if (c.duration or 0) > 90]
+    dropped_at_greeting = len(short_calls)
+    initial_drop = len(mid_calls)
+    dropped_before_resolution = len(long_calls)
+
+    # Voice of customer approximations from sentiment
+    voc_interested = len(positives)
+    voc_not_interested = len(negatives)
+
+    return CampaignMetricsResponse(
+        calls_attempted=calls_attempted,
+        calls_completed=calls_completed,
+        lead_qualified=lead_qualified,
+        call_back_booked=call_back_booked,
+        goal_completion_rate=goal_completion_rate,
+        dnd_numbers=dnd_numbers,
+        sentiment_positive=sentiment_positive,
+        sentiment_neutral=sentiment_neutral,
+        sentiment_negative=sentiment_negative,
+        intent_recognition=intent_recognition,
+        switch_to_human_ratio=switch_to_human_ratio,
+        dropped_at_greeting=dropped_at_greeting,
+        initial_drop=initial_drop,
+        dropped_before_resolution=dropped_before_resolution,
+        voc_interested=voc_interested,
+        voc_not_interested=voc_not_interested,
+    )
 
 
 @app.get("/conversations/{conversation_id}", response_model=ConversationDetailResponse)
@@ -850,67 +912,43 @@ def get_agents(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Get agents from ElevenLabs, filtered by user's receiver_number if mapped"""
+    """Get agents from ElevenLabs, filtered to only those used in conversations with user's receiver_number"""
     agents = elevenlabs_client.get_agents()
     if not agents:
         return []
     
-    # If user has receiver_number mapped, filter agents to only show those used in their conversations
+    # Filter to only agents that appear in conversations with user's receiver_number
     if current_user.receiver_number:
-        # Get all unique agent names/IDs from conversations with this receiver_number
         conversations = (
             db.query(Conversation)
             .filter(Conversation.receiver_number == current_user.receiver_number)
             .filter(Conversation.agent.isnot(None))
             .all()
         )
+        allowed_identifiers = {conv.agent for conv in conversations if conv.agent}
         
-        # Extract unique agent identifiers (names or IDs) from conversations
-        allowed_agent_identifiers = {conv.agent for conv in conversations if conv.agent}
-        
-        if not allowed_agent_identifiers:
-            # No conversations found for this receiver_number, return empty list
+        if not allowed_identifiers:
             return []
         
-        # Build a map of agent_id -> agent_name and agent_name -> agent_id for matching
-        agent_id_to_name = {}
-        agent_name_to_id = {}
-        for agent in agents:
-            agent_id = agent.get("agent_id") or agent.get("id") or ""
-            agent_name = agent.get("name") or ""
-            if agent_id:
-                agent_id_to_name[agent_id] = agent_name
-            if agent_name:
-                agent_name_to_id[agent_name] = agent_id
+        agent_id_to_name = {a.get("agent_id") or a.get("id") or "": a.get("name") or "" for a in agents if a.get("agent_id") or a.get("id")}
+        agent_name_to_id = {v: k for k, v in agent_id_to_name.items() if v}
         
-        # Find all agent IDs that match the allowed identifiers
-        allowed_agent_ids = set()
-        for identifier in allowed_agent_identifiers:
-            # Check if identifier is an agent ID
-            if identifier in agent_id_to_name:
-                allowed_agent_ids.add(identifier)
-            # Check if identifier is an agent name
-            elif identifier in agent_name_to_id:
-                allowed_agent_ids.add(agent_name_to_id[identifier])
-            # Also check if any agent name matches (case-insensitive)
-            for agent_name, agent_id in agent_name_to_id.items():
-                if agent_name.lower() == identifier.lower():
-                    allowed_agent_ids.add(agent_id)
+        allowed_ids = set()
+        for ident in allowed_identifiers:
+            if ident in agent_id_to_name:
+                allowed_ids.add(ident)
+            elif ident in agent_name_to_id:
+                allowed_ids.add(agent_name_to_id[ident])
+            for name, aid in agent_name_to_id.items():
+                if name and ident and name.lower() == ident.lower():
+                    allowed_ids.add(aid)
         
-        # Filter agents to only those that appear in user's conversations
-        filtered_agents = []
-        for agent in agents:
-            agent_id = agent.get("agent_id") or agent.get("id") or ""
-            agent_name = agent.get("name") or ""
-            
-            # Include agent if its ID or name matches any allowed identifier
-            if (agent_id in allowed_agent_ids or 
-                agent_id in allowed_agent_identifiers or
-                agent_name in allowed_agent_identifiers or
-                any(agent_name.lower() == ident.lower() for ident in allowed_agent_identifiers)):
-                filtered_agents.append(agent)
-        
-        agents = filtered_agents
+        agents = [
+            a for a in agents
+            if (a.get("agent_id") or a.get("id") or "") in allowed_ids
+            or (a.get("name") or "") in allowed_identifiers
+            or any((a.get("name") or "").lower() == i.lower() for i in allowed_identifiers if i)
+        ]
     
     # Transform agents to match our response schema
     agent_list = []
@@ -1751,12 +1789,11 @@ def get_chat_agents(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Get list of agents available for chat"""
+    """Get list of agents available for chat - only those used in conversations with user's receiver_number"""
     agents = elevenlabs_client.get_agents()
     if not agents:
         return []
     
-    # Filter by user's receiver_number if mapped (same logic as /agents endpoint)
     if current_user.receiver_number:
         conversations = (
             db.query(Conversation)
@@ -1764,56 +1801,35 @@ def get_chat_agents(
             .filter(Conversation.agent.isnot(None))
             .all()
         )
+        allowed_identifiers = {conv.agent for conv in conversations if conv.agent}
         
-        allowed_agent_identifiers = {conv.agent for conv in conversations if conv.agent}
-        
-        if not allowed_agent_identifiers:
+        if not allowed_identifiers:
             return []
         
-        agent_id_to_name = {}
-        agent_name_to_id = {}
-        for agent in agents:
-            agent_id = agent.get("agent_id") or agent.get("id") or ""
-            agent_name = agent.get("name") or ""
-            if agent_id:
-                agent_id_to_name[agent_id] = agent_name
-            if agent_name:
-                agent_name_to_id[agent_name] = agent_id
+        agent_id_to_name = {a.get("agent_id") or a.get("id") or "": a.get("name") or "" for a in agents if a.get("agent_id") or a.get("id")}
+        agent_name_to_id = {v: k for k, v in agent_id_to_name.items() if v}
         
-        allowed_agent_ids = set()
-        for identifier in allowed_agent_identifiers:
-            if identifier in agent_id_to_name:
-                allowed_agent_ids.add(identifier)
-            elif identifier in agent_name_to_id:
-                allowed_agent_ids.add(agent_name_to_id[identifier])
-            for agent_name, agent_id in agent_name_to_id.items():
-                if agent_name.lower() == identifier.lower():
-                    allowed_agent_ids.add(agent_id)
+        allowed_ids = set()
+        for ident in allowed_identifiers:
+            if ident in agent_id_to_name:
+                allowed_ids.add(ident)
+            elif ident in agent_name_to_id:
+                allowed_ids.add(agent_name_to_id[ident])
+            for name, aid in agent_name_to_id.items():
+                if name and ident and name.lower() == ident.lower():
+                    allowed_ids.add(aid)
         
-        filtered_agents = []
-        for agent in agents:
-            agent_id = agent.get("agent_id") or agent.get("id") or ""
-            agent_name = agent.get("name") or ""
-            
-            if (agent_id in allowed_agent_ids or 
-                agent_id in allowed_agent_identifiers or
-                agent_name in allowed_agent_identifiers or
-                any(agent_name.lower() == ident.lower() for ident in allowed_agent_identifiers)):
-                filtered_agents.append({
-                    "agent_id": agent_id,
-                    "name": agent_name
-                })
-        
-        return filtered_agents
+        agents = [
+            a for a in agents
+            if (a.get("agent_id") or a.get("id") or "") in allowed_ids
+            or (a.get("name") or "") in allowed_identifiers
+            or any((a.get("name") or "").lower() == i.lower() for i in allowed_identifiers if i)
+        ]
     
-    # Return all agents if no receiver_number filter
     return [
-        {
-            "agent_id": agent.get("agent_id") or agent.get("id") or "",
-            "name": agent.get("name") or ""
-        }
-        for agent in agents
-        if agent.get("agent_id") or agent.get("id")
+        {"agent_id": a.get("agent_id") or a.get("id") or "", "name": a.get("name") or ""}
+        for a in agents
+        if a.get("agent_id") or a.get("id")
     ]
 
 

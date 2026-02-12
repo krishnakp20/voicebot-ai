@@ -157,3 +157,20 @@ class VerifyOtpResponse(BaseModel):
     message: str
 
 
+class CampaignMetricsResponse(BaseModel):
+    calls_attempted: int
+    calls_completed: int
+    lead_qualified: int
+    call_back_booked: int
+    goal_completion_rate: str
+    dnd_numbers: int
+    sentiment_positive: str
+    sentiment_neutral: str
+    sentiment_negative: str
+    intent_recognition: str
+    switch_to_human_ratio: str
+    dropped_at_greeting: int
+    initial_drop: int
+    dropped_before_resolution: int
+    voc_interested: int
+    voc_not_interested: int

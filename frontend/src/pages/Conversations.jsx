@@ -8,14 +8,23 @@ const Conversations = () => {
   const [loading, setLoading] = useState(true)
   const [searchTerm, setSearchTerm] = useState('')
   const [sentimentFilter, setSentimentFilter] = useState('all')
+  const todayStr = new Date().toISOString().split('T')[0]
+  const [startDate, setStartDate] = useState(todayStr)
+  const [endDate, setEndDate] = useState(todayStr)
 
   useEffect(() => {
     fetchConversations()
   }, [])
 
-  const fetchConversations = async () => {
+  const fetchConversations = async (customStart, customEnd) => {
     try {
-      const response = await api.get('/conversations')
+      const params = {}
+      const appliedStart = customStart || startDate
+      const appliedEnd = customEnd || endDate
+      if (appliedStart) params.start_date = appliedStart
+      if (appliedEnd) params.end_date = appliedEnd
+
+      const response = await api.get('/conversations', { params })
       setConversations(response.data)
     } catch (error) {
       console.error('Error fetching conversations:', error)
@@ -318,11 +327,14 @@ const Conversations = () => {
         </button>
       </div>
 
-      {/* Search and Filters */}
+      {/* Search, Date, and Sentiment Filters */}
       <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-4">
-        <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3">
+        <div className="flex flex-col lg:flex-row lg:items-end lg:justify-between gap-3">
           {/* Search Bar */}
           <div className="flex-1 max-w-lg">
+            <label className="block text-xs font-medium text-gray-600 mb-1">
+              Search
+            </label>
             <input
               type="text"
               placeholder="Search by customer number or agent name..."
@@ -330,6 +342,42 @@ const Conversations = () => {
               onChange={(e) => setSearchTerm(e.target.value)}
               className="w-full px-4 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent"
             />
+          </div>
+
+          {/* Date Range */}
+          <div className="flex flex-col sm:flex-row items-start sm:items-end gap-2">
+            <div>
+              <label className="block text-xs font-medium text-gray-600 mb-1">
+                From
+              </label>
+              <input
+                type="date"
+                value={startDate}
+                onChange={(e) => setStartDate(e.target.value)}
+                className="px-3 py-1.5 border border-gray-300 rounded-lg text-sm bg-white focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-gray-600 mb-1">
+                To
+              </label>
+              <input
+                type="date"
+                value={endDate}
+                onChange={(e) => setEndDate(e.target.value)}
+                className="px-3 py-1.5 border border-gray-300 rounded-lg text-sm bg-white focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+              />
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                setLoading(true)
+                fetchConversations()
+              }}
+              className="mt-2 sm:mt-0 px-3 py-1.5 rounded-lg bg-blue-600 text-white text-xs font-medium hover:bg-blue-700 transition-colors"
+            >
+              Apply
+            </button>
           </div>
 
           {/* Sentiment Filters */}

@@ -73,17 +73,17 @@ const Agents = () => {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <div>
+      <div className="flex items-center justify-between gap-4">
+        <div className="min-w-0">
           <h1 className="text-2xl font-semibold text-gray-800">Agents</h1>
           <p className="text-sm text-gray-500 mt-0.5">Manage your voice AI personas</p>
         </div>
         <button
           onClick={handleCreate}
-          className="flex items-center gap-1.5 px-3 py-2 bg-blue-600 text-white rounded-md text-sm hover:bg-blue-700 transition-colors"
+          className="flex-shrink-0 inline-flex items-center gap-1.5 px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 transition-colors whitespace-nowrap"
         >
-          <PlusIcon className="w-4.5 h-4.5" />
-          Create Agent
+          <PlusIcon className="w-5 h-5 flex-shrink-0" />
+          <span>Create Agent</span>
         </button>
       </div>
 
